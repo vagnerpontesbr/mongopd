@@ -145,10 +145,6 @@ check_deps() {
     missing+=("mongostat  (part of mongodb-database-tools)")
   fi
 
-  if [[ "$FLAG_TCBSTATS" == "true" ]] && ! command -v mongotop &>/dev/null; then
-    missing+=("mongotop  (part of mongodb-database-tools)")
-  fi
-
   if [[ ${#missing[@]} -gt 0 ]]; then
     die "Required tools not found in PATH: ${missing[*]}"
   fi
@@ -227,15 +223,70 @@ cmd_locks() {
 
   if [[ "$LOCKS_WAIT" == "true" ]]; then
     print_info "Filter: waitingForLock: true"
-    run_mongosh 'printjson(db.currentOp({ waitingForLock: true }));'
+    run_mongosh '
+      var ops = db.currentOp({ waitingForLock: true }).inprog || [];
+      print("  \u2500\u2500 Lock Waiters \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+      if (ops.length === 0) {
+        print("  (no lock waiters)");
+      } else {
+        ops.forEach(function(op) {
+          print("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+          print("  OpID        : " + op.opid + "  << WAITING");
+          print("  Operation   : " + op.op);
+          print("  Namespace   : " + (op.ns || "\u2014"));
+          print("  Waiting     : " + (op.secs_running || 0) + "s");
+          print("  Locks       : " + JSON.stringify(op.locks || {}));
+          print("  Client      : " + (op.client || "\u2014"));
+          if (op.appName) print("  App         : " + op.appName);
+          print("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+        });
+        print("  Total waiters: " + ops.length);
+      }
+    '
   else
     print_info "Filter: all lock-related active operations"
-    run_mongosh 'printjson(db.currentOp({
-      $or: [
-        { waitingForLock: true },
-        { "lockStats.Collection.acquireWaitCount": { $exists: true } }
-      ]
-    }));'
+    run_mongosh '
+      var waiters  = db.currentOp({ waitingForLock: true }).inprog || [];
+      var allOps   = db.currentOp({ active: true }).inprog || [];
+      var blockers = allOps.filter(function(op) {
+        return !op.waitingForLock && op.locks && Object.keys(op.locks).length > 0;
+      });
+      print("  \u2500\u2500 Blocking Operations \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+      if (blockers.length === 0) {
+        print("  (none)");
+      } else {
+        blockers.forEach(function(op) {
+          print("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+          print("  OpID        : " + op.opid + "  (holding lock)");
+          print("  Operation   : " + op.op);
+          print("  Namespace   : " + (op.ns || "\u2014"));
+          print("  Running     : " + (op.secs_running || 0) + "s");
+          print("  Locks held  : " + JSON.stringify(op.locks || {}));
+          print("  Client      : " + (op.client || "\u2014"));
+          if (op.appName) print("  App         : " + op.appName);
+          print("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+        });
+      }
+      print("");
+      print("  \u2500\u2500 Lock Waiters \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+      if (waiters.length === 0) {
+        print("  (none)");
+      } else {
+        waiters.forEach(function(op) {
+          print("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+          print("  OpID        : " + op.opid + "  << WAITING");
+          print("  Operation   : " + op.op);
+          print("  Namespace   : " + (op.ns || "\u2014"));
+          print("  Waiting     : " + (op.secs_running || 0) + "s");
+          print("  Locks       : " + JSON.stringify(op.locks || {}));
+          print("  Client      : " + (op.client || "\u2014"));
+          if (op.appName) print("  App         : " + op.appName);
+          print("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+        });
+      }
+      print("");
+      print("  Blockers: " + blockers.length + "   Waiters: " + waiters.length);
+    '
   fi
 
   print_footer
@@ -246,12 +297,39 @@ cmd_locks() {
 # ─────────────────────────────────────────────────────────────
 cmd_wlocks() {
   print_header "All Lock-Related Operations  [equiv: db2pd -wlocks]"
-  run_mongosh 'printjson(db.currentOp({
-    $or: [
-      { waitingForLock: true },
-      { lockStats: { $exists: true } }
-    ]
-  }));'
+  run_mongosh '
+    var all = db.currentOp({ active: true }).inprog || [];
+    var locked = all.filter(function(op) {
+      return op.waitingForLock ||
+             (op.locks && Object.keys(op.locks).length > 0);
+    });
+    if (locked.length === 0) {
+      print("  (no lock-related operations)");
+    } else {
+      locked.forEach(function(op) {
+        var status = op.waitingForLock ? "WAITING  << BLOCKED" : "holding";
+        print("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+        print("  OpID        : " + op.opid + "  [" + status + "]");
+        print("  Operation   : " + op.op);
+        print("  Namespace   : " + (op.ns || "\u2014"));
+        print("  Running     : " + (op.secs_running || 0) + "s");
+        print("  Locks       : " + JSON.stringify(op.locks || {}));
+        if (op.lockStats) {
+          var ls = op.lockStats;
+          Object.keys(ls).forEach(function(k) {
+            var v = ls[k];
+            if (v.acquireWaitCount && Object.keys(v.acquireWaitCount).length > 0) {
+              print("  Wait count  : " + k + " " + JSON.stringify(v.acquireWaitCount));
+            }
+          });
+        }
+        print("  Client      : " + (op.client || "\u2014"));
+        if (op.appName) print("  App         : " + op.appName);
+        print("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+      });
+      print("  Total: " + locked.length + " lock-related operation(s)");
+    }
+  '
   print_footer
 }
 
@@ -261,17 +339,41 @@ cmd_wlocks() {
 cmd_applications() {
   print_header "Active Sessions and Connections  [equiv: db2pd -applications]"
 
-  local filter
-
+  local secs_threshold=0
   if [[ $SECS -gt 0 ]]; then
-    filter="{ active: true, secs_running: { \$gt: $SECS } }"
+    secs_threshold=$SECS
     print_info "Filter: active operations running longer than ${SECS}s"
   else
-    filter="{ active: true }"
     print_info "Filter: all active operations"
   fi
 
-  run_mongosh "printjson(db.currentOp($filter));"
+  run_mongosh "
+    var ops = db.currentOp({ active: true, secs_running: { \$gt: ${secs_threshold} } }).inprog || [];
+    if (ops.length === 0) {
+      print('  (no active operations matching filter)');
+    } else {
+      ops.forEach(function(op) {
+        var user = (op.effectiveUsers && op.effectiveUsers.length > 0)
+          ? op.effectiveUsers[0].user + '@' + op.effectiveUsers[0].db
+          : '\u2014';
+        print('  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500');
+        print('  OpID        : ' + op.opid);
+        print('  Operation   : ' + op.op);
+        print('  Namespace   : ' + (op.ns || '\u2014'));
+        print('  Running     : ' + (op.secs_running || 0) + 's');
+        print('  Waiting     : ' + (op.waitingForLock ? 'YES  << BLOCKED' : 'NO'));
+        if (op.transaction) {
+          var txnNum = op.transaction.parameters ? op.transaction.parameters.txnNumber : '?';
+          print('  In txn      : YES  txnNum=' + txnNum);
+        }
+        print('  Client      : ' + (op.client || '\u2014'));
+        if (op.appName) print('  App         : ' + op.appName);
+        print('  User        : ' + user);
+        print('  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500');
+      });
+      print('  Total active: ' + ops.length);
+    }
+  "
   print_footer
 }
 
@@ -378,15 +480,111 @@ cmd_dynamic() {
 #  3.4  Per-object read/write pressure  equiv: db2pd -tcbstats
 # ─────────────────────────────────────────────────────────────
 cmd_tcbstats() {
-  print_header "Per-Collection Read/Write Pressure  [equiv: db2pd -tcbstats]"
-  print_info "Running mongotop — interval: ${INTERVAL}s  (Ctrl+C to stop)"
-  print_footer
+  print_header "Per-Collection Performance Snapshot  [equiv: db2pd -tcbstats]"
 
-  local -a args=()
-  while IFS= read -r line; do
-    args+=("$line")
-  done < <(build_tool_args)
-  mongotop "${args[@]}" "$INTERVAL"
+  if [[ -n "$COLLECTION" ]]; then
+    print_info "Collection: ${DB_NAME}.${COLLECTION}"
+  else
+    [[ -z "$DB_NAME" ]] && die "-tcbstats requires -db <database>"
+    print_info "All collections in database: ${DB_NAME}"
+  fi
+
+  run_mongosh "
+    function toLong(v) {
+      if (!v) return 0;
+      return (typeof v === 'object' && v.toNumber) ? v.toNumber() : Number(v);
+    }
+    function avgMs(ops, lat) {
+      var o = toLong(ops), l = toLong(lat);
+      return o > 0 ? (l / o / 1000).toFixed(2) : '0.00';
+    }
+    function rp(v, n) { return String(v).padStart(n); }
+    function lp(v, n) { return String(v).padEnd(n); }
+
+    function printCollection(name) {
+      var cs;
+      try {
+        cs = db.getCollection(name).aggregate([
+          { \$collStats: {
+            latencyStats: { histograms: false },
+            storageStats: { scale: 1048576 },
+            count: {}
+          }}
+        ]).toArray()[0];
+      } catch(e) { return; }
+      if (!cs) return;
+
+      var lat  = cs.latencyStats || {};
+      var sto  = cs.storageStats || {};
+      var docs = cs.count !== undefined ? toLong(cs.count) : toLong(sto.count);
+      var dataMB  = sto.size           || 0;
+      var storeMB = sto.storageSize    || 0;
+      var ratio   = dataMB > 0 ? (storeMB / dataMB).toFixed(2) + 'x' : 'N/A';
+      var nidx    = sto.nindexes       || 0;
+      var idxMB   = sto.totalIndexSize || 0;
+      var avgObj  = sto.avgObjSize     || 0;
+
+      var reads = lat.reads    || {};
+      var writes= lat.writes   || {};
+      var cmds  = lat.commands || {};
+
+      print('  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500');
+      print('  Collection    : ' + name);
+      print('  Documents     : ' + docs);
+      print('  Avg doc size  : ' + avgObj + ' bytes');
+      print('  Storage       : ' + storeMB.toFixed(2) + ' MB  (data: ' + dataMB.toFixed(2) + ' MB  ratio: ' + ratio + ')');
+      print('  Indexes       : ' + nidx + '  (total: ' + idxMB.toFixed(2) + ' MB)');
+      print('');
+      print('  \u2500\u2500 Latency (cumulative since restart) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500');
+      print('  Reads         : ' + rp(toLong(reads.ops), 12) + ' ops   avg ' + rp(avgMs(reads.ops, reads.latency), 8) + ' ms');
+      print('  Writes        : ' + rp(toLong(writes.ops), 12) + ' ops   avg ' + rp(avgMs(writes.ops, writes.latency), 8) + ' ms');
+      print('  Commands      : ' + rp(toLong(cmds.ops), 12) + ' ops   avg ' + rp(avgMs(cmds.ops, cmds.latency), 8) + ' ms');
+      print('');
+
+      var idxStats;
+      try {
+        idxStats = db.getCollection(name).aggregate([{ \$indexStats: {} }]).toArray();
+      } catch(e) { idxStats = []; }
+
+      var unusedCount = 0;
+      print('  \u2500\u2500 Index Usage \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500');
+      if (idxStats.length === 0) {
+        print('  (no index stats available)');
+      } else {
+        idxStats.forEach(function(ix) {
+          var ops    = toLong(ix.accesses ? ix.accesses.ops : 0);
+          var unused = ops === 0 ? '  << UNUSED' : '';
+          if (ops === 0) unusedCount++;
+          print('  ' + lp(ix.name, 30) + rp(ops, 12) + ' accesses' + unused);
+        });
+      }
+
+      var recs = [];
+      if (unusedCount > 0)
+        recs.push('  [WARN] ' + unusedCount + ' unused index(es). Review with db.' + name + '.aggregate([{\$indexStats:{}}])');
+      var wAvg = parseFloat(avgMs(writes.ops, writes.latency));
+      if (wAvg > 10)
+        recs.push('  [INFO] Write avg latency ' + wAvg + ' ms. Monitor for increasing trend.');
+      if (nidx <= 1)
+        recs.push('  [INFO] Only _id index present. Add indexes for queried fields.');
+      if (recs.length > 0) {
+        print('');
+        recs.forEach(function(r) { print(r); });
+      }
+      print('  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500');
+      print('');
+    }
+
+    var target = '${COLLECTION}';
+    if (target !== '') {
+      printCollection(target);
+    } else {
+      var names = db.getCollectionNames();
+      names.forEach(function(n) { printCollection(n); });
+    }
+  "
+
+  print_footer
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -500,22 +698,119 @@ cmd_indexes() {
   if [[ -n "$COLLECTION" ]]; then
     print_info "Collection: ${DB_NAME}.${COLLECTION}   scale: ${SCALE_LABEL}"
     run_mongosh "
-      var s = db.getCollection('${COLLECTION}').stats({ scale: $SCALE, indexDetails: true });
-      print('Index count        : ' + s.nindexes);
-      print('Total index size   : ' + s.totalIndexSize + ' ${SCALE_LABEL}');
+      var s       = db.getCollection('${COLLECTION}').stats({ scale: ${SCALE}, indexDetails: true });
+      var idxDefs = db.getCollection('${COLLECTION}').getIndexes();
+      var sizes   = s.indexSizes || {};
+
+      print('  \u2500\u2500 Indexes: ${DB_NAME}.${COLLECTION} \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500');
+      print('  Total indexes    : ' + s.nindexes);
+      print('  Total index size : ' + s.totalIndexSize.toFixed(4) + ' ${SCALE_LABEL}');
       print('');
-      printjson(s.indexSizes);
+      idxDefs.forEach(function(idx) {
+        var sz = sizes[idx.name] !== undefined ? sizes[idx.name].toFixed(4) + ' ${SCALE_LABEL}' : '\u2014';
+        print('  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500');
+        print('  Name     : ' + idx.name);
+        print('  Keys     : ' + JSON.stringify(idx.key));
+        print('  Size     : ' + sz);
+        print('  Unique   : ' + (idx.unique ? 'YES' : 'NO'));
+        print('  Sparse   : ' + (idx.sparse ? 'YES' : 'NO'));
+        if (idx.expireAfterSeconds !== undefined) print('  TTL      : ' + idx.expireAfterSeconds + 's');
+        if (idx.partialFilterExpression) print('  Partial  : ' + JSON.stringify(idx.partialFilterExpression));
+        print('  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500');
+      });
+
+      var builds = db.currentOp({
+        \$or: [
+          { 'command.createIndexes': '${COLLECTION}' },
+          { msg: /Index Build/i }
+        ]
+      }).inprog || [];
+      print('');
+      print('  \u2500\u2500 Active Index Builds \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500');
+      if (builds.length === 0) {
+        print('  (none)');
+      } else {
+        builds.forEach(function(op) {
+          var pct = (op.progress && op.progress.total > 0)
+            ? ((op.progress.done / op.progress.total) * 100).toFixed(1) + '%  (' + op.progress.done + ' / ' + op.progress.total + ')'
+            : (op.msg || '\u2014');
+          print('  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500');
+          print('  OpID       : ' + op.opid);
+          print('  Collection : ' + (op.ns || '\u2014'));
+          if (op.command && op.command.indexes) {
+            var names = op.command.indexes.map(function(i) { return i.name || JSON.stringify(i.key); }).join(', ');
+            print('  Index(es)  : ' + names);
+          }
+          print('  Progress   : ' + pct);
+          print('  Running    : ' + (op.secs_running || 0) + 's');
+          print('  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500');
+        });
+      }
     "
   else
     [[ -z "$DB_NAME" ]] && die "-indexes without a collection name requires -db <database>"
     print_info "All collections in database: ${DB_NAME}   scale: ${SCALE_LABEL}"
     run_mongosh "
-      db.getCollectionNames().forEach(function(name) {
-        var s = db.getCollection(name).stats({ scale: $SCALE });
-        print('Collection: ' + name +
-              '  indexes: ' + s.nindexes +
-              '  totalIndexSize: ' + s.totalIndexSize + ' ${SCALE_LABEL}');
+      var unit  = '${SCALE_LABEL}';
+      var sc    = ${SCALE};
+      function lp(v, n) { return String(v).padEnd(n); }
+      function rp(v, n) { return String(v).padStart(n); }
+
+      var names    = db.getCollectionNames();
+      var sep      = '  ' + '\u2500'.repeat(82);
+      var hdr      = '  ' + lp('Collection', 28) + rp('Indexes', 9) +
+                     rp('Total (' + unit + ')', 22) + rp('Avg/index (' + unit + ')', 22);
+      var totIdx = 0, totSz = 0;
+      var rows = [];
+      names.forEach(function(name) {
+        var s = db.getCollection(name).stats({ scale: sc });
+        totIdx += s.nindexes;
+        totSz  += s.totalIndexSize;
+        rows.push({ name: name, n: s.nindexes, sz: s.totalIndexSize });
       });
+      print(sep); print(hdr); print(sep);
+      rows.forEach(function(r) {
+        var avg = r.n > 0 ? (r.sz / r.n).toFixed(4) : '\u2014';
+        print('  ' + lp(r.name, 28) + rp(r.n, 9) + rp(r.sz.toFixed(4), 22) + rp(avg, 22));
+      });
+      print(sep);
+      print('  ' + lp('TOTAL (' + names.length + ' collections)', 28) +
+            rp(totIdx, 9) + rp(totSz.toFixed(4), 22) + rp('\u2014', 22));
+      print(sep);
+
+      var builds = db.currentOp({
+        \$or: [
+          { 'command.createIndexes': { \$exists: true } },
+          { msg: /Index Build/i }
+        ]
+      }).inprog || [];
+      print('');
+      print('  \u2500\u2500 Active Index Builds \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500');
+      if (builds.length === 0) {
+        print('  (none)');
+      } else {
+        builds.forEach(function(op) {
+          var pctVal = (op.progress && op.progress.total > 0)
+            ? (op.progress.done / op.progress.total) * 100 : -1;
+          var pct = pctVal >= 0
+            ? pctVal.toFixed(1) + '%  (' + op.progress.done + ' / ' + op.progress.total + ')'
+            : (op.msg || '\u2014');
+          if (pctVal > 0 && op.secs_running) {
+            var eta = Math.round(op.secs_running * (100 - pctVal) / pctVal);
+            pct += '  (~' + eta + 's remaining)';
+          }
+          print('  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500');
+          print('  OpID       : ' + op.opid);
+          print('  Collection : ' + (op.ns || '\u2014'));
+          if (op.command && op.command.indexes) {
+            var names2 = op.command.indexes.map(function(i) { return i.name || JSON.stringify(i.key); }).join(', ');
+            print('  Index(es)  : ' + names2);
+          }
+          print('  Progress   : ' + pct);
+          print('  Running    : ' + (op.secs_running || 0) + 's');
+          print('  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500');
+        });
+      }
     "
   fi
 
@@ -627,16 +922,110 @@ cmd_transactions() {
   local secs_threshold=0
   if [[ $SECS -gt 0 ]]; then
     secs_threshold=$SECS
-    print_info "Filter: transactions running longer than ${SECS}s"
+    print_info "Filter: active operations running longer than ${SECS}s"
   else
     print_info "Filter: all active operations"
   fi
 
-  run_mongosh "printjson(db.currentOp({ active: true, secs_running: { \$gt: $secs_threshold } }));"
+  run_mongosh "
+    var thresh   = ${secs_threshold};
+    var active   = db.currentOp({ active: true, secs_running: { \$gt: thresh } }).inprog || [];
+    var inactive = (db.currentOp({ active: false }).inprog || []).filter(function(op) {
+      return op.transaction != null;
+    });
+    var ss  = db.serverStatus();
+    var txn = ss.transactions || {};
+    var wt  = (ss.wiredTiger && ss.wiredTiger.transaction) ? ss.wiredTiger.transaction : {};
 
-  echo ""
-  print_info "Aggregate transaction counters:"
-  run_mongosh 'printjson(db.serverStatus().transactions);'
+    function toLong(v) {
+      if (!v) return 0;
+      return (typeof v === 'object' && v.toNumber) ? v.toNumber() : Number(v);
+    }
+
+    print('  \u2500\u2500 Active Operations \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500');
+    if (active.length === 0) {
+      print('  (no active operations matching filter)');
+    } else {
+      active.forEach(function(op) {
+        print('  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500');
+        print('  OpID        : ' + op.opid);
+        print('  Operation   : ' + op.op);
+        print('  Namespace   : ' + (op.ns || '\u2014'));
+        print('  Running     : ' + (op.secs_running || 0) + 's');
+        if (op.transaction && op.transaction.parameters) {
+          print('  TxnNumber   : ' + op.transaction.parameters.txnNumber);
+        }
+        if (op.waitingForLock) print('  Lock wait   : YES  << BLOCKED');
+        print('  Client      : ' + (op.client || '\u2014'));
+        if (op.appName) print('  App         : ' + op.appName);
+        print('  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500');
+      });
+    }
+
+    print('');
+    print('  \u2500\u2500 Inactive Sessions (open transaction, not executing) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500');
+    if (inactive.length === 0) {
+      print('  (none)');
+    } else {
+      inactive.forEach(function(op) {
+        var secs = op.secs_running || 0;
+        var warn = secs > 30 ? '  << WARNING' : (secs > 10 ? '  << ELEVATED' : '');
+        print('  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500');
+        print('  OpID        : ' + op.opid);
+        print('  Open for    : ' + secs + 's' + warn);
+        print('  Namespace   : ' + (op.ns || '\u2014'));
+        if (op.transaction && op.transaction.parameters) {
+          print('  TxnNumber   : ' + op.transaction.parameters.txnNumber);
+        }
+        print('  Client      : ' + (op.client || '\u2014'));
+        if (op.appName) print('  App         : ' + op.appName);
+        print('  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500');
+      });
+    }
+
+    print('');
+    print('  \u2500\u2500 Transaction Counters \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500');
+    var curActive   = txn.currentActive   || 0;
+    var curInactive = txn.currentInactive || 0;
+    var curOpen     = txn.currentOpen     || 0;
+    var committed   = toLong(txn.totalCommitted);
+    var aborted     = toLong(txn.totalAborted);
+    var started     = toLong(txn.totalStarted);
+    var conflicts   = toLong(wt['transaction conflict between concurrent transactions']);
+    var abortRate   = started > 0 ? ((aborted / started) * 100).toFixed(2) : '0.00';
+    var confLabel   = conflicts > 100 ? '  << ELEVATED' : '  OK';
+
+    print('  Active now       : ' + curActive);
+    print('  Inactive now     : ' + curInactive + (curInactive > 0 ? '  << check inactive sessions above' : ''));
+    print('  Open total       : ' + curOpen);
+    print('  Committed        : ' + committed);
+    print('  Aborted          : ' + aborted);
+    print('  Abort rate       : ' + abortRate + '%');
+    print('  Write conflicts  : ' + conflicts + confLabel);
+
+    print('');
+    print('  \u2500\u2500 Recommendations \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500');
+    var recs = [];
+    if (curInactive > 0) {
+      recs.push('  [WARN] ' + curInactive + ' inactive transaction(s) detected.' +
+        '\n         Idle open transactions hold document-level locks and cause' +
+        '\n         write conflict retries on concurrent writers.' +
+        '\n         Action: use -wlocks to identify blockers; close the stalled session.');
+    }
+    if (parseFloat(abortRate) >= 5) {
+      recs.push('  [WARN] Abort rate at ' + abortRate + '%. High write conflict or timeout rate.' +
+        '\n         Action: reduce transaction scope; check for hot documents.');
+    }
+    if (conflicts > 100) {
+      recs.push('  [INFO] Write conflicts elevated (' + conflicts + '). Concurrent writers are' +
+        '\n         retrying. Common cause: long-lived read transactions or hot documents.' +
+        '\n         Action: reduce transaction duration; shard hot collections if needed.');
+    }
+    if (recs.length === 0) {
+      recs.push('  [OK] No transaction anomalies detected.');
+    }
+    recs.forEach(function(r) { print(r); });
+  "
 
   print_footer
 }
@@ -653,7 +1042,43 @@ cmd_utilities() {
   print_header "Active Utilities and Long-Running Tasks  [equiv: db2pd -utilities]"
   print_info "Operations running longer than ${secs_threshold}s:"
 
-  run_mongosh "printjson(db.currentOp({ active: true, secs_running: { \$gt: $secs_threshold } }));"
+  run_mongosh "
+    var ops = db.currentOp({ active: true, secs_running: { \$gt: ${secs_threshold} } }).inprog || [];
+    if (ops.length === 0) {
+      print('  (no operations running longer than ${secs_threshold}s)');
+    } else {
+      ops.forEach(function(op) {
+        var desc = '\u2014';
+        if (op.msg) {
+          desc = op.msg;
+        } else if (op.command) {
+          var k = Object.keys(op.command)[0];
+          if (k) desc = k + ': ' + (op.command[k] || '');
+        }
+        var pct = '\u2014';
+        if (op.progress && op.progress.total > 0) {
+          var pctVal = (op.progress.done / op.progress.total) * 100;
+          pct = pctVal.toFixed(1) + '%  (' + op.progress.done + ' / ' + op.progress.total + ')';
+          if (pctVal > 0 && op.secs_running) {
+            var eta = Math.round(op.secs_running * (100 - pctVal) / pctVal);
+            pct += '  (~' + eta + 's remaining)';
+          }
+        }
+        print('  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500');
+        print('  OpID        : ' + op.opid);
+        print('  Type        : ' + op.op + (op.type ? '  (' + op.type + ')' : ''));
+        print('  Namespace   : ' + (op.ns || '\u2014'));
+        print('  Running     : ' + (op.secs_running || 0) + 's');
+        print('  Progress    : ' + pct);
+        print('  Description : ' + desc);
+        print('  Waiting     : ' + (op.waitingForLock ? 'YES  << BLOCKED' : 'NO'));
+        print('  Client      : ' + (op.client || '\u2014'));
+        if (op.appName) print('  App         : ' + op.appName);
+        print('  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500');
+      });
+      print('  Total: ' + ops.length + ' long-running operation(s)');
+    }
+  "
 
   print_footer
 }
@@ -665,14 +1090,66 @@ cmd_reorgs() {
   print_header "Background Builds and Data Movement  [equiv: db2pd -reorgs]"
 
   run_mongosh '
-    printjson(db.currentOp({
+    var all = db.currentOp({
       $or: [
         { "command.createIndexes": { $exists: true } },
         { "msg": /Index Build/i },
         { "msg": /compact/i },
-        { "msg": /migration/i }
+        { "msg": /migration|resharding/i }
       ]
-    }));
+    }).inprog || [];
+
+    var builds     = all.filter(function(op) { return /Index Build/i.test(op.msg || "") || (op.command && op.command.createIndexes); });
+    var compacts   = all.filter(function(op) { return /compact/i.test(op.msg || ""); });
+    var migrations = all.filter(function(op) { return /migration|resharding/i.test(op.msg || ""); });
+
+    function printOp(op, type) {
+      var pctVal = (op.progress && op.progress.total > 0)
+        ? (op.progress.done / op.progress.total) * 100 : -1;
+      var pct = pctVal >= 0
+        ? pctVal.toFixed(1) + "%  (" + op.progress.done + " / " + op.progress.total + ")"
+        : (op.msg || "\u2014");
+      if (pctVal > 0 && op.secs_running) {
+        var eta = Math.round(op.secs_running * (100 - pctVal) / pctVal);
+        pct += "  (~" + eta + "s remaining)";
+      }
+      print("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+      print("  OpID        : " + op.opid);
+      print("  Collection  : " + (op.ns || "\u2014"));
+      if (type === "index" && op.command && op.command.indexes) {
+        var idxNames = op.command.indexes.map(function(i) { return i.name || JSON.stringify(i.key); }).join(", ");
+        print("  Index(es)   : " + idxNames);
+      }
+      print("  Running     : " + (op.secs_running || 0) + "s");
+      print("  Progress    : " + pct);
+      if (op.msg) print("  Phase       : " + op.msg);
+      print("  Client      : " + (op.client || "\u2014"));
+      if (op.appName) print("  App         : " + op.appName);
+      print("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+    }
+
+    print("  \u2500\u2500 Background Index Builds \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+    if (builds.length === 0) {
+      print("  (none)");
+    } else {
+      builds.forEach(function(op) { printOp(op, "index"); });
+    }
+
+    print("");
+    print("  \u2500\u2500 Compact Operations \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+    if (compacts.length === 0) {
+      print("  (none)");
+    } else {
+      compacts.forEach(function(op) { printOp(op, "compact"); });
+    }
+
+    print("");
+    print("  \u2500\u2500 Data Migrations / Resharding \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+    if (migrations.length === 0) {
+      print("  (none)");
+    } else {
+      migrations.forEach(function(op) { printOp(op, "migration"); });
+    }
   '
 
   print_footer
@@ -870,7 +1347,7 @@ ${BOLD}DIAGNOSTIC FLAGS  (mirror db2pd flag names)${RESET}
   -applications         Active sessions and connections
   -agents               Engine agent and thread activity
   -dynamic              Active queries + profiler slow operations
-  -tcbstats             Per-collection read/write pressure     (mongotop)
+  -tcbstats [collection] Per-collection performance snapshot    ($collStats)
   -tables  [collection] Collection footprint and storage stats
   -indexes [collection] Index footprint by collection
   -mempools             WiredTiger cache and memory pressure
@@ -903,8 +1380,9 @@ ${BOLD}EXAMPLES${RESET}
   # Real-time throughput (equivalent: db2top)
   mongopd.sh -host mdb1:27017 -stat -n 3
 
-  # Hot collections (equivalent: db2pd -tcbstats)
-  mongopd.sh -host mdb1:27017 -tcbstats -n 5
+  # Per-collection performance snapshot (equivalent: db2pd -tcbstats)
+  mongopd.sh -host mdb1:27017 -db sales -tcbstats
+  mongopd.sh -host mdb1:27017 -db sales -tcbstats orders
 
   # Collection + index size in MB (equivalent: db2pd -tables)
   mongopd.sh -host mdb1:27017 -db sales -tables orders -scale mb
@@ -931,7 +1409,6 @@ ${BOLD}ALIAS RECOMMENDATION${RESET}
 ${BOLD}REQUIREMENTS${RESET}
   mongosh         — mongodb.com/try/download/shell
   mongostat       — mongodb.com/try/download/database-tools  (for -stat)
-  mongotop        — mongodb.com/try/download/database-tools  (for -tcbstats)
 
 EOF
 }
@@ -998,7 +1475,11 @@ parse_args() {
         FLAG_DYNAMIC=true; (( DISPATCH_COUNT++ )) || true; shift ;;
 
       -tcbstats)
-        FLAG_TCBSTATS=true; (( DISPATCH_COUNT++ )) || true; shift ;;
+        FLAG_TCBSTATS=true; (( DISPATCH_COUNT++ )) || true
+        if [[ -n "${2:-}" ]] && [[ "${2}" != -* ]]; then
+          COLLECTION="$2"; shift
+        fi
+        shift ;;
 
       -tables)
         FLAG_TABLES=true; (( DISPATCH_COUNT++ )) || true
