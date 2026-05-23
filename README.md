@@ -325,31 +325,39 @@ mpd -host mdb1:27017 -db sales -agents
 
 #### Output
 
-```json
-{
-  "inprog": [
-    {
-      "opid": 330021,
-      "active": true,
-      "op": "command",
-      "ns": "admin.$cmd",
-      "command": { "serverStatus": 1 },
-      "secs_running": 0,
-      "client": "127.0.0.1:52011",
-      "appName": "mongosh"
-    },
-    {
-      "opid": 330019,
-      "active": true,
-      "op": "query",
-      "ns": "sales.orders",
-      "planSummary": "IXSCAN { customerId: 1 }",
-      "secs_running": 2,
-      "client": "10.10.1.8:44201",
-      "appName": "order-service"
-    }
-  ]
-}
+```
+  Total threads: 3
+  ──────────────────────────────────────────────────────────────────
+  OpID      : 330021
+  Type      : op  op: command
+  Namespace : admin.$cmd
+  Running   : 0s
+  Active    : true
+  Client    : 127.0.0.1:52011
+  User      : [{"user":"dba","db":"admin"}]
+  Plan      : —
+  Command   : {"serverStatus":1}
+  ──────────────────────────────────────────────────────────────────
+  OpID      : 330019
+  Type      : op  op: query
+  Namespace : sales.orders
+  Running   : 2s
+  Active    : true
+  Client    : 10.10.1.8:44201
+  User      : [{"user":"appuser","db":"admin"}]
+  Plan      : IXSCAN { customerId: 1 }
+  Command   : {"find":"orders","filter":{"customerId":"C-00123"}}
+  ──────────────────────────────────────────────────────────────────
+  OpID      : 330020
+  Type      : op  op: none
+  Namespace : —
+  Running   : —
+  Active    : false
+  Client    : —
+  User      : []
+  Plan      : —
+  Command   : {}
+  ──────────────────────────────────────────────────────────────────
 ```
 
 #### Output analysis
@@ -387,52 +395,46 @@ mpd -host mdb1:27017 -db sales -dynamic -profiling off
 
 #### Output — live in-flight queries section
 
-```json
-{
-  "inprog": [
-    {
-      "opid": 445502,
-      "active": true,
-      "secs_running": 3,
-      "op": "query",
-      "ns": "sales.orders",
-      "planSummary": "COLLSCAN",
-      "client": "10.20.1.51"
-    }
-  ]
-}
+```
+  ──────────────────────────────────────────────────────────────────
+  OpID      : 445502
+  Session   : {"id":{"$binary":{"base64":"abc123==","subType":"04"}}}
+  Operation : query
+  Namespace : sales.orders
+  Running   : 3s
+  Client    : 10.20.1.51:44201
+  User      : [{"user":"appuser","db":"admin"}]
+  Query     : {"find":"orders","filter":{"status":"OPEN","region":"LATAM"}}
+  ──────────────────────────────────────────────────────────────────
 ```
 
 #### Output — profiler section (system.profile)
 
-```json
-{
-  "op": "query",
-  "ns": "sales.orders",
-  "millis": 942,
-  "docsExamined": 182345,
-  "keysExamined": 0,
-  "nreturned": 15,
-  "planSummary": "COLLSCAN",
-  "ts": "2026-05-22T17:31:44.108Z",
-  "client": "10.20.1.51",
-  "command": {
-    "find": "orders",
-    "filter": { "status": "OPEN", "region": "LATAM" }
-  }
-}
+```
+  ──────────────────────────────────────────────────────────────────
+  Timestamp : 2026-05-22T17:31:44.108Z
+  Session   : {"id":{"$binary":{"base64":"abc123==","subType":"04"}}}
+  Operation : query
+  Namespace : sales.orders
+  User      : appuser@admin
+  Client    : 10.20.1.51
+  Duration  : 942 ms
+  Examined  : 182345 docs  returned: 15
+  Plan      : COLLSCAN
+  Query     : {"find":"orders","filter":{"status":"OPEN","region":"LATAM"}}
+  ──────────────────────────────────────────────────────────────────
 ```
 
 #### Output analysis
 
 | Field | What it means |
 |---|---|
-| `millis` | Total execution time in milliseconds |
-| `docsExamined` | Documents scanned to produce the result |
-| `keysExamined` | Index entries scanned |
-| `nreturned` | Documents returned to the client |
-| `planSummary` | `COLLSCAN` = full scan; `IXSCAN` = index used |
-| `command.filter` | The predicate being evaluated |
+| `Duration` | Total execution time in milliseconds |
+| `Examined` | Documents scanned / documents returned to the client |
+| `Plan` | `COLLSCAN` = full scan; `IXSCAN` = index used |
+| `Query` | The full command with predicate being evaluated |
+| `Running` | Seconds the in-flight operation has been active |
+| `Session` | Client LSID for traceability |
 
 **Interpretation:** The ratio `docsExamined / nreturned` is the key efficiency indicator. A ratio of 1:1 means every scanned document was returned. A ratio of 182345:15 means the engine scanned 12,000 documents for every one it returned — a missing or unusable index. `keysExamined: 0` with `COLLSCAN` confirms no index was used. The next step is `explain("executionStats")` on the query to verify and create the correct index.
 
@@ -498,32 +500,53 @@ mpd -host mdb1:27017 -db sales -tables orders -scale mb
 mpd -host mdb1:27017 -db sales -tables orders -scale gb
 ```
 
-#### Output
+#### Output (all collections — `mpd -db sales -tables -scale mb`)
 
-```json
-{
-  "ns": "sales.orders",
-  "count": 12500443,
-  "size": 18453201920,
-  "avgObjSize": 1476,
-  "storageSize": 6291456000,
-  "nindexes": 4,
-  "totalIndexSize": 2147483648,
-  "totalSize": 8438949648
-}
+```
+  ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Collection                    Docs  Avg(bytes)    Data(MB)   Store(MB)   Ratio  Idx     Idx(MB)   Total(MB)
+  ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+  orders                     1250044        1476   1760.9839   2048.0000     1.2    4   2048.0000   4096.0000
+  customers                   845221         892    713.1246    892.0000     1.3    3    768.0000   1660.0000
+  products                     12400         256      3.0233      4.0000     1.3    2      8.0000     12.0000
+  ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+  TOTAL (3 collections)      2107665           —   2477.1318   2944.0000       —    —   2824.0000   5768.0000
+  ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  ── Recommendations ──────────────────────────────────────────────────────
+  [OK] No anomalies detected.
+```
+
+#### Output (single collection — `mpd -db sales -tables orders -scale mb`)
+
+```
+  ── Collection ─────────────────────────────────────────────────────────────
+  Namespace   : sales.orders
+  Documents   : 1250044
+  Avg doc size: 1476 bytes
+  Data size   : 1760.9839 MB
+  Storage size: 2048.0000 MB  (compression ratio: 1.16)
+  Indexes     : 4
+  Index size  : 2048.0000 MB
+  Total size  : 4096.0000 MB
+
+  ── Recommendations ──────────────────────────────────────────────────────
+  [WARN] Index size (2048.0000 MB) exceeds data size (1760.9839 MB).
+         Action: review unused indexes with db.collection.aggregate([{$indexStats:{}}])
 ```
 
 #### Output analysis
 
-| Field | What it means |
+| Column | What it means |
 |---|---|
-| `count` | Total document count |
-| `size` | Logical uncompressed data volume in bytes (or MB/GB with `-scale`) |
-| `avgObjSize` | Average document size in bytes |
-| `storageSize` | Physical allocated storage on disk |
-| `nindexes` | Number of indexes on the collection |
-| `totalIndexSize` | Total index footprint |
-| `totalSize` | Collection storage plus all indexes |
+| `Docs` | Catalog count — no scan, reads WiredTiger metadata |
+| `Avg(bytes)` | Average document size, always in bytes |
+| `Data(MB)` | Logical uncompressed data volume |
+| `Store(MB)` | Physical allocated storage after WiredTiger compression |
+| `Ratio` | Compression ratio: `Store / Data`; >1 means compressed |
+| `Idx` | Number of indexes on the collection |
+| `Idx(MB)` | Total index footprint on disk |
+| `Total(MB)` | Storage + indexes combined |
 
 **Interpretation:** The gap between `size` and `storageSize` reflects WiredTiger compression efficiency. A `totalIndexSize` that approaches or exceeds available RAM is a warning that the index working set may not fit in cache, increasing read latency. If `nindexes` is high relative to write throughput, evaluate whether all indexes are actively used.
 
@@ -582,33 +605,43 @@ mpd -host mdb1:27017 -db sales -mempools
 
 #### Output
 
-```json
-{
-  "bytes_in_cache": 12884901888,
-  "max_bytes_configured": 17179869184,
-  "dirty_bytes": 322122547,
-  "pages_read_into_cache": 1845332,
-  "pages_written_from_cache": 1129211,
-  "app_threads_read_disk": 49221,
-  "app_threads_write_disk": 31811
-}
-
-Cache used : 75.0%
-Dirty      : 1.9%
+```
+  ── Cache Sizing ───────────────────────────────────────────────────
+  Configured        : 16.000 GB
+  In cache          : 12288.00 MB  (75.0%)
+  Dirty             : 307.35 MB  (1.9%)
+  ── I/O Pressure ───────────────────────────────────────────────────
+  Pages read into cache     : 1845332
+  Pages written from cache  : 1129211
+  App threads reading disk  : 49221
+  App threads writing disk  : 31811
+  ── Eviction Pressure ──────────────────────────────────────────────
+  Evicted by app threads    : 0  OK
+  Unmodified pages evicted  : 94821
+  Modified pages evicted    : 12043
+  Eviction worker evictions : 88234
+  Eviction server rounds    : 32184
+  ── Storage Engine Tickets (read / write slots) ────────────────
+  Read  tickets  in use / available / total : 3 / 125 / 128
+  Write tickets  in use / available / total : 1 / 127 / 128
+  ── Process Memory ──────────────────────────────────────────────────
+  Resident  : 18432 MB
+  Virtual   : 24576 MB
+  ── Recommendations ────────────────────────────────────────────────
+  [INFO] Cache at 75.0% — healthy headroom is narrowing. Watch dirty% trend.
 ```
 
 #### Output analysis
 
-| Field | What it means |
+| Section | What it means |
 |---|---|
-| `bytes_in_cache` / `max_bytes_configured` | Current vs configured cache ceiling |
-| `Cache used %` | Percentage of WiredTiger cache in use |
-| `dirty_bytes` / `Dirty %` | Modified data not yet flushed to disk |
-| `pages_read_into_cache` | Read pressure pulling pages from disk |
-| `app_threads_read_disk` | Application threads waiting for disk reads |
-| `app_threads_write_disk` | Application threads waiting for disk writes |
+| Cache Sizing | Current vs configured ceiling; used% and dirty% at a glance |
+| I/O Pressure | Read/write page counts; `App threads reading disk` rising signals working set overflow |
+| Eviction Pressure | `Evicted by app threads > 0` = **CRITICAL**: cache is too small for the working set |
+| Storage Engine Tickets | Available read/write slots; `0 available` = queuing and latency spikes |
+| Process Memory | OS-level resident and virtual memory for the mongod process |
 
-**Interpretation:** Cache used at 75–80% is normal under steady load. If `Dirty %` rises above 5–10% and stays elevated alongside queue buildup (visible in `-stat`), the storage subsystem may be unable to flush pages fast enough. `app_threads_read_disk` growing indicates the working set no longer fits in cache — either increase cache size or reduce the working set footprint.
+**Interpretation:** Cache used at 75–80% is normal under steady load. If `Dirty %` rises above 5–10% and stays elevated alongside queue buildup (visible in `-stat`), the storage subsystem may be unable to flush pages fast enough. `App threads reading disk` growing indicates the working set no longer fits in cache — either increase cache size or reduce the working set footprint.
 
 ---
 
@@ -786,61 +819,66 @@ mpd -uri "mongodb+srv://dba:pass@cluster.mongodb.net" -hadr
 mpd -hadr
 ```
 
-#### Output — rs.status()
-
-```json
-{
-  "set": "rs0",
-  "myState": 1,
-  "members": [
-    {
-      "name": "mdb1:27017",
-      "stateStr": "PRIMARY",
-      "health": 1,
-      "optimeDate": "2026-05-22T17:42:01Z",
-      "lastHeartbeatMessage": ""
-    },
-    {
-      "name": "mdb2:27017",
-      "stateStr": "SECONDARY",
-      "health": 1,
-      "optimeDate": "2026-05-22T17:41:58Z",
-      "lastHeartbeatMessage": ""
-    },
-    {
-      "name": "mdb3:27017",
-      "stateStr": "SECONDARY",
-      "health": 1,
-      "optimeDate": "2026-05-22T17:41:56Z",
-      "lastHeartbeatMessage": ""
-    }
-  ]
-}
-```
-
-#### Output — rs.printSecondaryReplicationInfo()
+#### Output
 
 ```
-source: mdb2:27017
-    syncedTo: Thu May 22 2026 17:41:58 GMT+0000
-    3 secs (0.0 hrs) behind the primary
+  ── Replica Set Overview ───────────────────────────────────────────────────
+  Set name    : rs0
+  My state    : 1  (1=PRIMARY 2=SECONDARY 6=UNKNOWN 8=DOWN)
+  Members     : 3
 
-source: mdb3:27017
-    syncedTo: Thu May 22 2026 17:41:56 GMT+0000
-    5 secs (0.0 hrs) behind the primary
+  ── Members ────────────────────────────────────────────────────────────────
+  ──────────────────────────────────────────────────────────────────
+  Member      : mdb1:27017
+  State       : PRIMARY
+  Health      : OK
+  Votes       : 1
+  Priority    : 1
+  Optime      : Thu May 22 2026 17:42:01 GMT+0000
+  Uptime      : 720h
+  ──────────────────────────────────────────────────────────────────
+  Member      : mdb2:27017
+  State       : SECONDARY
+  Health      : OK
+  Votes       : 1
+  Priority    : 1
+  Optime      : Thu May 22 2026 17:41:58 GMT+0000
+  Repl lag    : 3s  OK
+  Last hbeat  : OK
+  Ping (ms)   : 1
+  ──────────────────────────────────────────────────────────────────
+  Member      : mdb3:27017
+  State       : SECONDARY
+  Health      : OK
+  Votes       : 1
+  Priority    : 1
+  Optime      : Thu May 22 2026 17:41:56 GMT+0000
+  Repl lag    : 5s  OK
+  Last hbeat  : OK
+  Ping (ms)   : 2
+  ──────────────────────────────────────────────────────────────────
+
+  ── Oplog Window (data safety) ─────────────────────────────────────────────
+  Oplog first : Tue May 20 2026 17:42:01 GMT+0000
+  Oplog last  : Thu May 22 2026 17:42:01 GMT+0000
+  Window      : 48.0h  OK
+
+  ── Recommendations ────────────────────────────────────────────────────────
+  [OK] All members healthy. Replication lag within normal bounds.
 ```
 
 #### Output analysis
 
 | Field | What it means |
 |---|---|
-| `stateStr` | Member role: `PRIMARY`, `SECONDARY`, `RECOVERING`, `ARBITER` |
-| `health: 1` | Member is reachable and healthy |
-| `health: 0` | Member is unreachable — escalate immediately |
-| `optimeDate` | Latest oplog timestamp applied by each member |
-| Lag (seconds) | Difference in `optimeDate` between secondary and primary |
+| `State` | Member role: `PRIMARY`, `SECONDARY`, `RECOVERING`, `ARBITER` |
+| `Health` | `OK` = reachable and healthy; `DOWN << CRITICAL` = unreachable |
+| `Repl lag` | Seconds behind the primary optime; `>> WARNING` if > 30s |
+| `Ping (ms)` | Network round-trip latency to this member |
+| `Oplog Window` | Time span covered by the oplog; < 24h is a warning |
+| `Votes / Priority` | Election weight; `Priority: 0` = non-electable member |
 
-**Interpretation:** Compare `optimeDate` across all members. A secondary falling behind indicates replication lag — possible causes: slow storage on the secondary, heavy write load on the primary, or network issues between members. Sustained lag above a few seconds in production warrants investigation. `stateStr: "RECOVERING"` means the member is catching up and is temporarily unavailable for reads.
+**Interpretation:** Compare `Repl lag` across all secondaries. A secondary falling behind indicates possible causes: slow storage on the secondary, heavy write load on the primary, or network issues between members. Sustained lag above 30s in production warrants investigation. `State: RECOVERING` means the member is catching up and is temporarily unavailable for reads. An oplog window under 24h means a stopped secondary risks falling off the oplog and requiring a full resync.
 
 ---
 
