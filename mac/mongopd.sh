@@ -87,6 +87,11 @@ PROFILING_ACTION=""
 COLLECTION=""
 DISPATCH_COUNT=0
 
+FLAG_OSINFO=false
+FLAG_DIAG=false
+FLAG_SHARDING=false
+LOG_LINES=5000
+
 # ─────────────────────────────────────────────────────────────
 #  Resolve connection from environment variable
 #  Priority: -uri flag > MONGODB_URI env var > -host flag > default host
@@ -213,6 +218,424 @@ run_mongosh() {
     conn_args+=("$line")
   done < <(build_mongosh_args)
   mongosh "${conn_args[@]}" --eval "${db_prefix}${eval_script}"
+}
+
+# ─────────────────────────────────────────────────────────────
+#  Local mongod detection — shared by -osinfo and -diag
+#  Sets: LOCAL_MONGOD (true|false), MONGOD_PID, MONGOD_DBPATH,
+#        MONGOD_LOGPATH, MONGOD_PORT
+# ─────────────────────────────────────────────────────────────
+detect_local_mongod() {
+  LOCAL_MONGOD=false
+  MONGOD_PID=""
+  MONGOD_DBPATH=""
+  MONGOD_LOGPATH=""
+  MONGOD_PORT="27017"
+
+  local pid
+  pid=$(pgrep -x mongod 2>/dev/null | head -1 || true)
+  if [[ -z "$pid" ]]; then
+    return 0
+  fi
+
+  LOCAL_MONGOD=true
+  MONGOD_PID="$pid"
+
+  local proc_args
+  proc_args=$(ps -p "$pid" -o args= 2>/dev/null || true)
+
+  local dbpath logpath port cfgfile
+  dbpath=$(echo "$proc_args"  | grep -oE '\-\-dbpath [^ ]+' | awk '{print $2}' | head -1)
+  logpath=$(echo "$proc_args" | grep -oE '\-\-logpath [^ ]+' | awk '{print $2}' | head -1)
+  port=$(echo "$proc_args"    | grep -oE '\-\-port [0-9]+' | awk '{print $2}' | head -1)
+  cfgfile=$(echo "$proc_args" | grep -oE '\-\-config [^ ]+' | awk '{print $2}' | head -1)
+  [[ -z "$cfgfile" ]] && cfgfile=$(echo "$proc_args" | grep -oE '\-f [^ ]+' | awk '{print $2}' | head -1)
+
+  if [[ -n "$cfgfile" ]] && [[ -f "$cfgfile" ]]; then
+    if [[ -z "$dbpath" ]]; then
+      dbpath=$(grep -E '^[[:space:]]*dbPath[[:space:]]*:' "$cfgfile" | awk -F: '{print $2}' | tr -d ' "' | head -1)
+    fi
+    if [[ -z "$logpath" ]]; then
+      logpath=$(grep -E '^[[:space:]]*path[[:space:]]*:' "$cfgfile" | awk -F: '{print $2}' | tr -d ' "' | head -1)
+    fi
+    if [[ -z "$port" ]]; then
+      port=$(grep -E '^[[:space:]]*port[[:space:]]*:' "$cfgfile" | awk -F: '{print $2}' | tr -d ' ' | head -1)
+    fi
+  fi
+
+  MONGOD_DBPATH="${dbpath:-/data/db}"
+  MONGOD_LOGPATH="${logpath:-}"
+  MONGOD_PORT="${port:-27017}"
+}
+
+# ─────────────────────────────────────────────────────────────
+#  OS host resource metrics           equiv: db2pd -osinfo
+# ─────────────────────────────────────────────────────────────
+cmd_osinfo() {
+  print_header "Host Resource Metrics  [equiv: db2pd -osinfo]"
+
+  detect_local_mongod
+
+  if [[ "$LOCAL_MONGOD" == "false" ]]; then
+    print_info "No local mongod process found on this host."
+    print_info "-osinfo requires running mongopd.sh directly on the mongod host."
+    print_info "For remote cache metrics, use -mempools instead."
+    print_footer
+    return 0
+  fi
+
+  echo "  mongod PID   : ${MONGOD_PID}"
+  echo "  dbpath       : ${MONGOD_DBPATH}"
+  [[ -n "$MONGOD_LOGPATH" ]] && echo "  logpath      : ${MONGOD_LOGPATH}"
+  echo "  port         : ${MONGOD_PORT}"
+  echo ""
+
+  # ── Process ─────────────────────────────────────────────────
+  echo "  \u2500\u2500 Process (PID: ${MONGOD_PID}) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  local pcpu pmem rss vsz
+  pcpu=$(ps -p "$MONGOD_PID" -o pcpu= 2>/dev/null | tr -d ' ' || echo "N/A")
+  pmem=$(ps -p "$MONGOD_PID" -o pmem= 2>/dev/null | tr -d ' ' || echo "N/A")
+  rss=$(ps  -p "$MONGOD_PID" -o rss=  2>/dev/null | tr -d ' ' || echo "N/A")
+  vsz=$(ps  -p "$MONGOD_PID" -o vsz=  2>/dev/null | tr -d ' ' || echo "N/A")
+  echo "  CPU%         : ${pcpu}"
+  echo "  MEM%         : ${pmem}"
+  if [[ "$rss" =~ ^[0-9]+$ ]]; then
+    echo "  RSS (MB)     : $(( rss / 1024 ))"
+    echo "  VSZ (MB)     : $(( vsz / 1024 ))"
+  fi
+
+  # ── System CPU ──────────────────────────────────────────────
+  echo ""
+  echo "  \u2500\u2500 System CPU \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  local cpu_line
+  cpu_line=$(top -l 1 -n 0 2>/dev/null | grep -E '^CPU usage' | head -1 || true)
+  if [[ -n "$cpu_line" ]]; then
+    echo "  ${cpu_line}"
+  else
+    echo "  (cpu info unavailable)"
+  fi
+
+  # ── System Memory ────────────────────────────────────────────
+  echo ""
+  echo "  \u2500\u2500 System Memory \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  local mem_line
+  mem_line=$(top -l 1 -n 0 2>/dev/null | grep -E '^PhysMem' | head -1 || true)
+  if [[ -n "$mem_line" ]]; then
+    echo "  ${mem_line}"
+  else
+    echo "  (memory info unavailable)"
+  fi
+
+  # ── Disk (dbpath) ────────────────────────────────────────────
+  echo ""
+  echo "  \u2500\u2500 Disk (dbpath: ${MONGOD_DBPATH}) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  if [[ -d "$MONGOD_DBPATH" ]]; then
+    df -h "$MONGOD_DBPATH" | while IFS= read -r line; do echo "  ${line}"; done
+  else
+    echo "  (dbpath not accessible from this user)"
+  fi
+
+  # ── Disk I/O (iostat — BSD) ──────────────────────────────────
+  echo ""
+  echo "  \u2500\u2500 Disk I/O (iostat) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  if command -v iostat &>/dev/null; then
+    # BSD iostat: 2 samples — first is since boot, second is recent interval
+    local io_hdr io_data
+    io_hdr=$(iostat -d -c 1 2>/dev/null | head -2 || true)
+    io_data=$(iostat -d -c 2 2>/dev/null | tail -1 || true)
+    if [[ -n "$io_data" ]]; then
+      echo "$io_hdr"  | while IFS= read -r line; do echo "  ${line}"; done
+      echo "  ${io_data}"
+    else
+      echo "  (no iostat data)"
+    fi
+  else
+    echo "  (iostat not available)"
+  fi
+
+  # ── Recommendations ──────────────────────────────────────────
+  echo ""
+  echo "  \u2500\u2500 Recommendations \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  local recs=()
+
+  if [[ "$pcpu" =~ ^[0-9] ]]; then
+    local cpu_int
+    cpu_int=$(printf "%.0f" "$pcpu" 2>/dev/null || echo 0)
+    if [[ $cpu_int -ge 80 ]]; then
+      recs+=("  [WARN] mongod CPU at ${pcpu}%. Check for COLLSCAN with -dynamic or lock contention with -locks.")
+    fi
+  fi
+
+  if [[ -d "$MONGOD_DBPATH" ]]; then
+    local disk_pct
+    disk_pct=$(df "$MONGOD_DBPATH" 2>/dev/null | tail -1 | awk '{print $5}' | tr -d '%' || echo 0)
+    if [[ "$disk_pct" =~ ^[0-9]+$ ]] && [[ $disk_pct -ge 85 ]]; then
+      recs+=("  [WARN] Disk at ${disk_pct}% capacity on dbpath ${MONGOD_DBPATH}. Plan storage expansion or archival.")
+    fi
+  fi
+
+  if [[ ${#recs[@]} -eq 0 ]]; then
+    recs+=("  [OK] No resource anomalies detected.")
+  fi
+  for r in "${recs[@]}"; do echo "$r"; done
+
+  print_footer
+}
+
+# ─────────────────────────────────────────────────────────────
+#  Log event scanner                  equiv: db2diag
+# ─────────────────────────────────────────────────────────────
+cmd_diag() {
+  print_header "Log Event Scanner  [equiv: db2diag]"
+
+  detect_local_mongod
+
+  if [[ "$LOCAL_MONGOD" == "false" ]]; then
+    print_info "No local mongod process found on this host."
+    print_info "-diag requires access to the mongod log file on the host."
+    print_info "Log events (OOM, elections, disk errors) are only visible locally."
+    print_footer
+    return 0
+  fi
+
+  local logfile="$MONGOD_LOGPATH"
+
+  if [[ -z "$logfile" ]] || [[ ! -f "$logfile" ]]; then
+    print_warn "Log file not found or not readable: '${logfile:-<not detected>}'"
+    print_info "Set the path manually: export MONGOD_LOGPATH=/path/to/mongod.log"
+    print_footer
+    return 0
+  fi
+
+  print_info "Log file   : ${logfile}"
+  print_info "Scan depth : last ${LOG_LINES} lines"
+  echo ""
+
+  local log_data
+  log_data=$(tail -n "$LOG_LINES" "$logfile" 2>/dev/null || true)
+
+  _diag_sections "$log_data"
+
+  print_footer
+}
+
+_diag_sections() {
+  local log_data="$1"
+
+  # ── Fatal / Crash events ────────────────────────────────────
+  echo "  ── Fatal / Crash events ────────────────────────────────────────────"
+  local fatal_lines
+  fatal_lines=$(echo "$log_data" | grep '"s":"F"' 2>/dev/null || true)
+  if [[ -n "$fatal_lines" ]]; then
+    echo "$fatal_lines" | while IFS= read -r line; do
+      local ts msg
+      ts=$(echo "$line"  | grep -oE '"\\$date":"[^"]*"' | cut -d'"' -f4 | head -1)
+      msg=$(echo "$line" | grep -oE '"msg":"[^"]*"'     | cut -d'"' -f4 | head -1)
+      echo "  [FATAL] ${ts}  ${msg}"
+    done
+  else
+    echo "  (none in last ${LOG_LINES} lines)"
+  fi
+
+  # ── OOM signals ─────────────────────────────────────────────
+  echo ""
+  echo "  ── OOM signals ─────────────────────────────────────────────────────"
+  local oom_lines
+  oom_lines=$(echo "$log_data" | grep -iE 'oom|out of memory|SIGKILL|Killed process' 2>/dev/null || true)
+  if [[ -n "$oom_lines" ]]; then
+    echo "$oom_lines" | head -20 | while IFS= read -r line; do echo "  ${line}"; done
+    local oom_count
+    oom_count=$(echo "$oom_lines" | wc -l | tr -d ' ')
+    [[ $oom_count -gt 20 ]] && echo "  ... (${oom_count} total matches — showing first 20)"
+  else
+    echo "  (none in last ${LOG_LINES} lines)"
+  fi
+
+  # ── Elections ───────────────────────────────────────────────
+  echo ""
+  echo "  ── Elections (last 10) ─────────────────────────────────────────────"
+  local election_lines
+  election_lines=$(echo "$log_data" | grep '"c":"REPL"' | grep -iE 'election|stepDown|PRIMARY|SECONDARY|became primary|became secondary' 2>/dev/null || true)
+  if [[ -n "$election_lines" ]]; then
+    echo "$election_lines" | tail -10 | while IFS= read -r line; do
+      local ts msg
+      ts=$(echo "$line"  | grep -oE '"\\$date":"[^"]*"' | cut -d'"' -f4 | head -1)
+      msg=$(echo "$line" | grep -oE '"msg":"[^"]*"'     | cut -d'"' -f4 | head -1)
+      echo "  ${ts}  ${msg}"
+    done
+    local elec_count
+    elec_count=$(echo "$election_lines" | wc -l | tr -d ' ')
+    echo "  Total election events: ${elec_count}"
+  else
+    echo "  (none in last ${LOG_LINES} lines)"
+  fi
+
+  # ── Index build failures ────────────────────────────────────
+  echo ""
+  echo "  ── Index build failures ────────────────────────────────────────────"
+  local idx_lines
+  idx_lines=$(echo "$log_data" | grep '"c":"INDEX"' | grep -E '"s":"[EF]"|failed|error' 2>/dev/null || true)
+  if [[ -n "$idx_lines" ]]; then
+    echo "$idx_lines" | while IFS= read -r line; do
+      local ts msg
+      ts=$(echo "$line"  | grep -oE '"\\$date":"[^"]*"' | cut -d'"' -f4 | head -1)
+      msg=$(echo "$line" | grep -oE '"msg":"[^"]*"'     | cut -d'"' -f4 | head -1)
+      echo "  ${ts}  ${msg}"
+    done
+  else
+    echo "  (none in last ${LOG_LINES} lines)"
+  fi
+
+  # ── Storage / Disk errors ───────────────────────────────────
+  echo ""
+  echo "  ── Storage / Disk errors ───────────────────────────────────────────"
+  local disk_lines
+  disk_lines=$(echo "$log_data" | grep '"c":"STORAGE"' | grep -E '"s":"[EWF]"|ENOSPC|corrupt|checksum' 2>/dev/null || true)
+  if [[ -n "$disk_lines" ]]; then
+    echo "$disk_lines" | head -20 | while IFS= read -r line; do
+      local ts msg
+      ts=$(echo "$line"  | grep -oE '"\\$date":"[^"]*"' | cut -d'"' -f4 | head -1)
+      msg=$(echo "$line" | grep -oE '"msg":"[^"]*"'     | cut -d'"' -f4 | head -1)
+      echo "  ${ts}  ${msg}"
+    done
+  else
+    echo "  (none in last ${LOG_LINES} lines)"
+  fi
+
+  # ── Restart markers ─────────────────────────────────────────
+  echo ""
+  echo "  ── Restart markers ─────────────────────────────────────────────────"
+  local restart_lines
+  restart_lines=$(echo "$log_data" | grep '"ctx":"initandlisten"' | grep -iE '"msg":"[^"]*[Ss]tarting|mongod starting|start up' 2>/dev/null || true)
+  local restart_count
+  restart_count=$(echo "$restart_lines" | grep -c . 2>/dev/null || echo 0)
+  if [[ $restart_count -gt 0 ]]; then
+    echo "  ${restart_count} restart(s) detected in last ${LOG_LINES} lines"
+    echo "$restart_lines" | while IFS= read -r line; do
+      local ts msg
+      ts=$(echo "$line"  | grep -oE '"\\$date":"[^"]*"' | cut -d'"' -f4 | head -1)
+      msg=$(echo "$line" | grep -oE '"msg":"[^"]*"'     | cut -d'"' -f4 | head -1)
+      echo "  ${ts}  ${msg}"
+    done
+  else
+    echo "  (none in last ${LOG_LINES} lines)"
+  fi
+}
+
+# ─────────────────────────────────────────────────────────────
+#  Sharding topology                  (requires mongos)
+# ─────────────────────────────────────────────────────────────
+cmd_sharding() {
+  print_header "Sharding Topology and Balancer State"
+
+  run_mongosh '
+    var hello = db.adminCommand({ hello: 1 });
+    if (hello.msg !== "isdbgrid") {
+      print("  [INFO] This connection is not a mongos.");
+      print("         -sharding requires connecting to a mongos router.");
+      print("         Current topology: " +
+        (hello.setName ? "replica set (" + hello.setName + ")" : "standalone or unknown"));
+      quit(0);
+    }
+
+    function lp(v, n) { return String(v).padEnd(n); }
+    function rp(v, n) { return String(v).padStart(n); }
+
+    // ── Shards ───────────────────────────────────────────────
+    print("  \u2500\u2500 Shards \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+    var shardList = db.adminCommand({ listShards: 1 });
+    if (shardList.shards && shardList.shards.length > 0) {
+      shardList.shards.forEach(function(s) {
+        var state = (s.state === 0) ? "  [DRAINING]" : "";
+        print("  " + lp(s._id, 20) + s.host + state);
+      });
+    } else {
+      print("  (no shards found)");
+    }
+
+    // ── Balancer ─────────────────────────────────────────────
+    print("");
+    print("  \u2500\u2500 Balancer \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+    var bal = db.adminCommand({ balancerStatus: 1 });
+    var balMode  = bal.mode  || "unknown";
+    var inRound  = bal.inBalancerRound ? "YES" : "NO";
+    var scheduled = (bal.numScheduledChunksMoves !== undefined) ? bal.numScheduledChunksMoves : "N/A";
+    print("  Mode              : " + balMode);
+    print("  In round          : " + inRound);
+    print("  Scheduled moves   : " + scheduled);
+
+    // ── Top collections by chunks (top 10) ───────────────────
+    print("");
+    print("  \u2500\u2500 Top collections by chunks (top 10) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+    try {
+      var chunkAgg = db.getSiblingDB("config").chunks.aggregate([
+        { $group: { _id: "$ns", count: { $sum: 1 } } },
+        { $sort:  { count: -1 } },
+        { $limit: 10 }
+      ]).toArray();
+      if (chunkAgg.length === 0) {
+        print("  (no chunk data in config.chunks)");
+      } else {
+        chunkAgg.forEach(function(r) {
+          print("  " + lp(r._id, 52) + rp(r.count, 8) + " chunks");
+        });
+      }
+    } catch(e) {
+      print("  (unable to read config.chunks: " + e.message + ")");
+    }
+
+    // ── Sharded collections ──────────────────────────────────
+    print("");
+    print("  \u2500\u2500 Sharded collections \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+    try {
+      var cols = db.getSiblingDB("config").collections
+        .find({ dropped: false }, { _id: 1, key: 1, unique: 1 }).toArray();
+      if (cols.length === 0) {
+        print("  (none)");
+      } else {
+        cols.forEach(function(c) {
+          var uniq = c.unique ? "YES" : "NO";
+          print("  " + lp(c._id, 50) + "  key: " + JSON.stringify(c.key) + "  unique: " + uniq);
+        });
+      }
+    } catch(e) {
+      print("  (unable to read config.collections: " + e.message + ")");
+    }
+
+    // ── Sharding statistics ──────────────────────────────────
+    print("");
+    print("  \u2500\u2500 Sharding statistics \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+    try {
+      var shardStats = db.adminCommand({ serverStatus: 1 }).shardingStatistics || {};
+      var cc = shardStats.catalogCache || {};
+      print("  Migration commits           : " + (shardStats.countDonorMoveChunkCommitted || 0));
+      print("  Stale config errors         : " + (cc.numStaleConfigErrors || 0));
+      print("  Catalog cache — databases   : " + (cc.numDatabases    || "N/A"));
+      print("  Catalog cache — collections : " + (cc.numCollections  || "N/A"));
+    } catch(e) {
+      print("  (sharding statistics unavailable: " + e.message + ")");
+    }
+
+    // ── Recommendations ──────────────────────────────────────
+    print("");
+    print("  \u2500\u2500 Recommendations \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+    var recs = [];
+    if (balMode !== "full" && balMode !== "autoMergeOnly") {
+      recs.push("  [WARN] Balancer mode is \"" + balMode + "\". Chunk distribution will not be automatically balanced.");
+    }
+    if (inRound === "YES") {
+      recs.push("  [INFO] Balancer is currently running a migration round.");
+    }
+    if (typeof scheduled === "number" && scheduled > 100) {
+      recs.push("  [INFO] " + scheduled + " chunk moves scheduled. Active rebalancing in progress.");
+    }
+    if (recs.length === 0) {
+      recs.push("  [OK] Sharding state looks normal.");
+    }
+    recs.forEach(function(r) { print(r); });
+  '
+
+  print_footer
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -904,6 +1327,70 @@ cmd_mempools() {
       recs.push("  [CRITICAL] Read ticket pool exhausted (0 available). Readers are queuing." +
         "\n             Action: identify slow scans using -dynamic and add missing indexes.");
     }
+
+    // ── Latency Percentiles ───────────────────────────────────────────────
+    print("  \u2500\u2500 Latency Percentiles (cumulative since restart) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+    try {
+      var latResp = db.adminCommand({ serverStatus: 1, opLatencies: { histograms: true } });
+      var latData = latResp.opLatencies || {};
+
+      function computePct(histogram, totalOps, pct) {
+        if (!histogram || !histogram.length || totalOps === 0) return -1;
+        var target = Math.ceil(totalOps * pct / 100);
+        var cumul = 0;
+        for (var bi = 0; bi < histogram.length; bi++) {
+          cumul += histogram[bi].count;
+          if (cumul >= target) return histogram[bi].micros / 1000;
+        }
+        return histogram[histogram.length - 1].micros / 1000;
+      }
+
+      function fmtMs(v) {
+        if (v < 0) return "N/A".padStart(9);
+        return (v.toFixed(2) + "ms").padStart(9);
+      }
+
+      var latSep = "  " + "\u2500".repeat(62);
+      var latHdr = "  " + "Type".padEnd(10) + "Ops".padStart(12) +
+                   "Avg".padStart(10) + "P50".padStart(10) +
+                   "P95".padStart(10) + "P99".padStart(10);
+      print(latSep);
+      print(latHdr);
+      print(latSep);
+
+      var latTypes = [
+        { name: "Reads",    d: latData.reads    },
+        { name: "Writes",   d: latData.writes   },
+        { name: "Commands", d: latData.commands }
+      ];
+      var writePct99 = -1;
+      var readPct99  = -1;
+
+      latTypes.forEach(function(t) {
+        var d     = t.d || {};
+        var ops   = (d.ops     && d.ops.toNumber)     ? d.ops.toNumber()     : Number(d.ops     || 0);
+        var latUs = (d.latency && d.latency.toNumber) ? d.latency.toNumber() : Number(d.latency || 0);
+        var avgMs = ops > 0 ? latUs / ops / 1000 : 0;
+        var hist  = d.histogram || [];
+        var p50   = computePct(hist, ops, 50);
+        var p95   = computePct(hist, ops, 95);
+        var p99   = computePct(hist, ops, 99);
+        if (t.name === "Writes") writePct99 = p99;
+        if (t.name === "Reads")  readPct99  = p99;
+        print("  " + t.name.padEnd(10) + String(ops).padStart(12) +
+              fmtMs(avgMs) + fmtMs(p50) + fmtMs(p95) + fmtMs(p99));
+      });
+      print(latSep);
+
+      if (writePct99 > 20)
+        recs.push("  [INFO] Write P99 " + writePct99.toFixed(2) + "ms > 20ms. Investigate with -tcbstats and -indexes.");
+      if (readPct99 > 50)
+        recs.push("  [INFO] Read P99 " + readPct99.toFixed(2) + "ms > 50ms. Check for COLLSCAN operations with -dynamic.");
+    } catch(latErr) {
+      print("  (latency histogram unavailable: " + latErr.message + ")");
+    }
+    print("");
+
     if (recs.length === 0) {
       recs.push("  [OK] Cache pressure is within normal bounds. No action required.");
     }
@@ -1356,6 +1843,9 @@ ${BOLD}DIAGNOSTIC FLAGS  (mirror db2pd flag names)${RESET}
   -reorgs               Background index builds and data movement
   -hadr                 Replica set health and replication state
   -stat                 Real-time throughput monitor            (mongostat)
+  -osinfo               Host CPU, memory, disk and I/O metrics (requires local mongod)
+  -diag                 Scan mongod log for OOM, crashes and elections (requires local mongod)
+  -sharding             Sharding topology, balancer state and chunk distribution (requires mongos)
 
 ${BOLD}MODIFIERS${RESET}
   -kill    <opid>       Kill operation by opid (prompts for confirmation)
@@ -1364,7 +1854,8 @@ ${BOLD}MODIFIERS${RESET}
   -profiling [on|off]   Enable/disable profiler (used with -dynamic)
   -limit   <n>          Limit profiler output rows               (default: 20)
   -scale   [mb|gb]      Output scale for -tables and -indexes
-  -n       <seconds>    Sampling interval for -stat and -tcbstats (default: 5)
+  -n       <seconds>    Sampling interval for -stat              (default: 5)
+  -lines   <n>          Log lines scanned by -diag               (default: 5000)
   --no-color            Disable ANSI color output
 
 ${BOLD}EXAMPLES${RESET}
@@ -1510,6 +2001,15 @@ parse_args() {
       -hadr)
         FLAG_HADR=true; (( DISPATCH_COUNT++ )) || true; shift ;;
 
+      -osinfo)
+        FLAG_OSINFO=true; (( DISPATCH_COUNT++ )) || true; shift ;;
+
+      -diag)
+        FLAG_DIAG=true; (( DISPATCH_COUNT++ )) || true; shift ;;
+
+      -sharding)
+        FLAG_SHARDING=true; (( DISPATCH_COUNT++ )) || true; shift ;;
+
       -stat)
         FLAG_STAT=true; (( DISPATCH_COUNT++ )) || true; shift ;;
 
@@ -1545,6 +2045,10 @@ parse_args() {
       -n)
         [[ -z "${2:-}" ]] && die "-n requires a number (interval in seconds)"
         INTERVAL="$2"; shift 2 ;;
+
+      -lines)
+        [[ -z "${2:-}" ]] && die "-lines requires a number"
+        LOG_LINES="$2"; shift 2 ;;
 
       *)
         die "Unknown option: $1  (use -help for usage)" ;;
@@ -1585,6 +2089,9 @@ main() {
   [[ "$FLAG_REORGS" == "true" ]]       && cmd_reorgs
   [[ "$FLAG_HADR" == "true" ]]         && cmd_hadr
   [[ "$FLAG_STAT" == "true" ]]         && cmd_stat
+  [[ "$FLAG_OSINFO" == "true" ]]       && cmd_osinfo
+  [[ "$FLAG_DIAG" == "true" ]]         && cmd_diag
+  [[ "$FLAG_SHARDING" == "true" ]]     && cmd_sharding
   [[ "$FLAG_KILL" == "true" ]]         && cmd_kill
 
   return 0
