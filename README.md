@@ -5,6 +5,15 @@
 
 ---
 
+## Disclaimer
+
+> **This tool is NOT official MongoDB software and is NOT supported by MongoDB Technical Support.**  
+> It was created to assist DB2 DBAs in their transition to MongoDB, mirroring familiar `db2pd` diagnostic patterns.
+>
+> **USE IN PRODUCTION WITH CAUTION.** Depending on data volume or catalog size, some diagnostics may consume additional CPU, memory, or I/O during execution. Prefer running during off-peak hours on large deployments.
+
+---
+
 ## Introduction
 
 If you have ever been an IBM Db2 or Informix DBA, you know the power of looking directly into the database memory structures without having to run heavy SQL queries. Tools like `db2pd` and `onstat` are a DBA's best friend during a crunch.
@@ -139,6 +148,7 @@ mongopd.sh -db <database> [connection] [diagnostic-flag] [modifiers]
 | `-limit <n>` | Limit profiler rows for `-dynamic` | `20` |
 | `-scale [mb\|gb]` | Output scale for `-tables` and `-indexes` | bytes |
 | `-n <seconds>` | Sampling interval for `-stat` | `5` |
+| `-lines <n>` | Log lines scanned by `-diag` | `5000` |
 | `-kill <opid>` | Kill operation by opid (prompts for confirmation) | — |
 | `--no-color` | Disable ANSI color output | — |
 
@@ -713,6 +723,14 @@ mpd -host mdb1:27017 -db sales -mempools
   ── Process Memory ──────────────────────────────────────────────────
   Resident  : 18432 MB
   Virtual   : 24576 MB
+  ── Latency Percentiles (cumulative since restart) ────────────────
+  ──────────────────────────────────────────────────────────────
+  Type               Ops       Avg       P50       P95       P99
+  ──────────────────────────────────────────────────────────────
+  Reads            19023   0.20ms   0.03ms   0.03ms   0.03ms
+  Writes            1810   3.88ms   0.13ms   0.13ms   0.13ms
+  Commands        244724   0.12ms   0.01ms   0.01ms   0.01ms
+  ──────────────────────────────────────────────────────────────
   ── Recommendations ────────────────────────────────────────────────
   [INFO] Cache at 75.0% — healthy headroom is narrowing. Watch dirty% trend.
 ```
@@ -726,8 +744,9 @@ mpd -host mdb1:27017 -db sales -mempools
 | Eviction Pressure | `Evicted by app threads > 0` = **CRITICAL**: cache is too small for the working set |
 | Storage Engine Tickets | Available read/write slots; `0 available` = queuing and latency spikes |
 | Process Memory | OS-level resident and virtual memory for the mongod process |
+| Latency Percentiles | Cumulative Avg/P50/P95/P99 per operation type since last `mongod` restart |
 
-**Interpretation:** Cache used at 75–80% is normal under steady load. If `Dirty %` rises above 5–10% and stays elevated alongside queue buildup (visible in `-stat`), the storage subsystem may be unable to flush pages fast enough. `App threads reading disk` growing indicates the working set no longer fits in cache — either increase cache size or reduce the working set footprint.
+**Interpretation:** Cache used at 75–80% is normal under steady load. If `Dirty %` rises above 5–10% and stays elevated alongside queue buildup (visible in `-stat`), the storage subsystem may be unable to flush pages fast enough. `App threads reading disk` growing indicates the working set no longer fits in cache — either increase cache size or reduce the working set footprint. Write P99 > 20 ms or Read P99 > 50 ms are the key latency thresholds to watch.
 
 ---
 
@@ -992,6 +1011,202 @@ mpd -hadr
 
 ---
 
+### `-osinfo` — Host CPU, memory, disk and I/O metrics
+
+**db2pd equivalent:** `db2pd -osinfo`
+
+> Requires running `mongopd.sh` directly on the host where `mongod` is running. When used against a remote cluster (Atlas or other), an advisory is displayed and the command returns gracefully.
+
+#### Syntax
+
+```bash
+# Run on the mongod host
+mpd -osinfo
+
+# Against remote cluster — shows advisory
+mpd -uri "mongodb+srv://dba:pass@cluster.mongodb.net" -osinfo
+```
+
+#### Output (local mongod found)
+
+```
+  mongod PID   : 12345
+  dbpath       : /var/lib/mongodb
+  logpath      : /var/log/mongodb/mongod.log
+  port         : 27017
+
+  ── Process (PID: 12345) ───────────────────────────────────────────────
+  CPU%         : 4.2
+  MEM%         : 31.5
+  RSS (MB)     : 5120
+  VSZ (MB)     : 8192
+
+  ── System CPU ─────────────────────────────────────────────────────────
+  %Cpu(s):  8.2 us,  1.4 sy,  0.0 ni, 89.5 id,  0.2 wa,  0.3 hi,  0.4 si
+  Load avg (1/5/15): 0.82 0.74 0.68
+
+  ── System Memory ──────────────────────────────────────────────────────
+                total        used        free      shared  buff/cache   available
+  Mem:          15882        9214        2108         218        4559        6220
+  Swap:          2047           0        2047
+
+  ── Disk (dbpath: /var/lib/mongodb) ────────────────────────────────────
+  Filesystem      Size  Used Avail Use% Mounted on
+  /dev/sda1       100G   42G   54G  44% /
+
+  ── Disk I/O (iostat) ──────────────────────────────────────────────────
+  Device            r/s     w/s    rkB/s    wkB/s   await  util%
+  sda              12.4    48.2    312.0   1843.0     2.1   18.4
+
+  ── Recommendations ────────────────────────────────────────────────────
+  [OK] No resource anomalies detected.
+```
+
+#### Output (remote cluster)
+
+```
+  [INFO] No local mongod process found on this host.
+  [INFO] -osinfo requires running mongopd.sh directly on the mongod host.
+  [INFO] For remote cache metrics, use -mempools instead.
+```
+
+#### Output analysis
+
+| Section | What it means |
+|---|---|
+| Process | PID-level CPU%, MEM%, RSS and VSZ for the `mongod` process |
+| System CPU | Host-level CPU breakdown; `wa` (iowait) > 5% indicates storage bottleneck |
+| System Memory | Available memory; low `available` + high swap = memory pressure |
+| Disk (dbpath) | Filesystem usage for the data directory; > 85% is a warning threshold |
+| Disk I/O | `await` (latency ms) and `util%` per device; `util% > 80%` is a warning |
+
+**Interpretation:** Use `-osinfo` to correlate application-level latency spikes (visible in `-mempools` Latency Percentiles) with OS-level resource exhaustion. High `wa` cpu combined with high `await` on the device hosting `dbpath` is the classic I/O bottleneck fingerprint.
+
+---
+
+### `-diag` — Scan mongod log for critical events
+
+**db2pd equivalent:** `db2diag`
+
+> Requires access to the local `mongod` log file. On Linux, falls back to `journalctl -u mongod` when no log path is detected. When used against a remote cluster, an advisory is displayed.
+
+#### Syntax
+
+```bash
+# Scan last 5000 lines (default)
+mpd -diag
+
+# Scan last 20000 lines
+mpd -diag -lines 20000
+```
+
+#### Output
+
+```
+  ── Fatal / Crash events ────────────────────────────────────────────────
+  (none in last 5000 lines)
+
+  ── OOM signals ─────────────────────────────────────────────────────────
+  (none in last 5000 lines)
+
+  ── Elections (last 10) ─────────────────────────────────────────────────
+  2026-05-22T14:12:01.003+0000  Becoming secondary
+  2026-05-22T14:12:04.112+0000  Becoming primary
+  Total election events: 2
+
+  ── Index build failures ────────────────────────────────────────────────
+  (none in last 5000 lines)
+
+  ── Storage / Disk errors ───────────────────────────────────────────────
+  (none in last 5000 lines)
+
+  ── Restart markers ─────────────────────────────────────────────────────
+  1 restart(s) detected in last 5000 lines
+  2026-05-22T08:00:01.000+0000  mongod startup complete
+```
+
+#### Output analysis
+
+| Section | Events scanned for |
+|---|---|
+| Fatal / Crash | Log entries with severity `"s":"F"` — engine faults |
+| OOM signals | `out of memory`, `SIGKILL`, `Killed process` — Linux OOM killer activity |
+| Elections | `REPL` component events with `election`, `stepDown`, `became primary/secondary` |
+| Index build failures | `INDEX` component entries at ERROR or FATAL severity |
+| Storage / Disk errors | `STORAGE` component warnings/errors including `ENOSPC`, `corrupt`, `checksum` |
+| Restart markers | `initandlisten` context entries — each marks a `mongod` startup |
+
+**Interpretation:** Multiple restarts in a short window are the first indicator of a crash loop. OOM signals alongside restarts confirm the Linux OOM killer terminated the process — either the WiredTiger cache ceiling needs reducing or the host needs more memory. Election events correlate with application-visible connection interruptions.
+
+---
+
+### `-sharding` — Sharding topology and balancer state
+
+> Requires connecting to a `mongos` router. When connected to a replica set member or standalone, an advisory is displayed with the detected topology.
+
+#### Syntax
+
+```bash
+# Connect to mongos
+mpd -uri "mongodb://mongos1:27017" -sharding
+
+# Against a replica set — shows advisory
+mpd -uri "mongodb+srv://dba:pass@cluster.mongodb.net" -sharding
+```
+
+#### Output (connected to mongos)
+
+```
+  ── Shards ─────────────────────────────────────────────────────────────
+  shard01              mdb1:27017,mdb2:27017,mdb3:27017
+  shard02              mdb4:27017,mdb5:27017,mdb6:27017
+
+  ── Balancer ───────────────────────────────────────────────────────────
+  Mode              : full
+  In round          : NO
+  Scheduled moves   : 0
+
+  ── Top collections by chunks (top 10) ─────────────────────────────────
+  sales.orders                                            1024 chunks
+  crm.customers                                            512 chunks
+  analytics.events                                         256 chunks
+
+  ── Sharded collections ────────────────────────────────────────────────
+  sales.orders           key: {"customerId":1}  unique: NO
+  crm.customers          key: {"region":1}      unique: NO
+
+  ── Sharding statistics ────────────────────────────────────────────────
+  Migration commits           : 4821
+  Stale config errors         : 0
+  Catalog cache — databases   : 4
+  Catalog cache — collections : 12
+
+  ── Recommendations ────────────────────────────────────────────────────
+  [OK] Sharding state looks normal.
+```
+
+#### Output (connected to replica set)
+
+```
+  [INFO] This connection is not a mongos.
+         -sharding requires connecting to a mongos router.
+         Current topology: replica set (atlas-nsc3fg-shard-0)
+```
+
+#### Output analysis
+
+| Section | What it means |
+|---|---|
+| Shards | All registered shards with connection strings; `[DRAINING]` marks shards being removed |
+| Balancer | `full` = active; `off` = disabled; `In round: YES` = migration in progress |
+| Top collections by chunks | Identifies hotspot collections with high chunk counts (skewed distribution risk) |
+| Sharded collections | Shard key and uniqueness for each sharded collection |
+| Sharding statistics | Cumulative migration commits and catalog cache health counters |
+
+**Interpretation:** A high chunk count on a single collection combined with an inactive balancer (`off`) means distribution is not being rebalanced — manual chunk management or balancer re-enablement may be needed. `Stale config errors > 0` can cause `mongos` routing to retry unnecessarily; investigate router restarts or catalog cache refreshes.
+
+---
+
 ### `-stat` — Real-time throughput monitor
 
 **db2pd equivalent:** `db2top` / `db2pd` live counters
@@ -1119,11 +1334,14 @@ mpd -host mdb1:27017 -db sales -locks -applications -mempools -hadr
 | `db2pd -tcbstats` | `-tcbstats [collection]` | `db.collection.aggregate([{$collStats:{latencyStats:{},storageStats:{},count:{}}}])` |
 | `db2pd -tables` | `-tables [collection]` | `db.collection.stats()` |
 | `db2pd -indexes` | `-indexes [collection]` | `db.collection.stats()` (index section) |
-| `db2pd -mempools` | `-mempools` | `db.serverStatus().wiredTiger.cache` |
+| `db2pd -mempools` | `-mempools` | `db.serverStatus().wiredTiger.cache` + `opLatencies` |
 | `db2pd -transactions` | `-transactions` | `db.currentOp()` + `serverStatus().transactions` |
 | `db2pd -utilities` | `-utilities` | `db.currentOp({ secs_running: {$gt: 30} })` |
 | `db2pd -reorgs` | `-reorgs` | `db.currentOp({ command.createIndexes... })` |
 | `db2pd -hadr` | `-hadr` | `rs.status()` + `rs.printSecondaryReplicationInfo()` |
+| `db2pd -osinfo` | `-osinfo` | `ps`, `top`, `df`, `iostat` (host OS — local mongod only) |
+| `db2diag` | `-diag` | `tail` mongod log + journalctl (local mongod only) |
+| Sharded cluster admin | `-sharding` | `listShards`, `balancerStatus`, `config.chunks` (requires mongos) |
 | `db2top` | `-stat` | `mongostat` |
 
 ---
@@ -1141,7 +1359,12 @@ mpd -host mdb1:27017 -db sales -locks -applications -mempools -hadr
 | Is there queue pressure on the engine? | `mpd -stat -n 3` |
 | Are slow queries running? | `mpd -db sales -dynamic -profiling on -slowms 200` |
 | Is the cache under pressure? | `mpd -db sales -mempools` |
+| What are the read/write latency percentiles? | `mpd -db sales -mempools` (Latency Percentiles section) |
 | How big is a collection and its indexes? | `mpd -db sales -tables orders -scale mb` |
 | Is an index build in progress? | `mpd -db sales -utilities` |
 | What is the replication lag? | `mpd -hadr` |
 | Are there open transactions stalled? | `mpd -db sales -transactions -secs 10` |
+| What are the host CPU, memory and disk stats? | `mpd -osinfo` (run on the mongod host) |
+| Were there recent OOM kills or crashes? | `mpd -diag` (run on the mongod host) |
+| Scan more log history | `mpd -diag -lines 20000` |
+| Is the balancer running and are shards balanced? | `mpd -sharding` (requires mongos) |
