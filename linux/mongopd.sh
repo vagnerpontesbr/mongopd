@@ -120,6 +120,18 @@ print_footer() {
   echo -e "${CYAN}──────────────────────────────────────────────────────────────────${RESET}\n"
 }
 
+print_disclaimer() {
+  echo -e "${YELLOW}${BOLD}┌─ DISCLAIMER ────────────────────────────────────────────────────────────────┐${RESET}"
+  echo -e "${YELLOW}│ This tool is NOT official MongoDB software and is NOT supported by MongoDB  │${RESET}"
+  echo -e "${YELLOW}│ Technical Support. It was created to assist DB2 DBAs in their transition   │${RESET}"
+  echo -e "${YELLOW}│ to MongoDB, mirroring familiar db2pd diagnostic patterns.                  │${RESET}"
+  echo -e "${YELLOW}│                                                                             │${RESET}"
+  echo -e "${YELLOW}│ USE IN PRODUCTION WITH CAUTION. Depending on data volume or catalog size,  │${RESET}"
+  echo -e "${YELLOW}│ some diagnostics may consume additional CPU, memory, or I/O during         │${RESET}"
+  echo -e "${YELLOW}│ execution. Prefer running during off-peak hours for large deployments.      │${RESET}"
+  echo -e "${YELLOW}└─────────────────────────────────────────────────────────────────────────────┘${RESET}"
+}
+
 print_info() {
   echo -e "${YELLOW}[INFO]${RESET} $*"
 }
@@ -1808,6 +1820,7 @@ cmd_kill() {
 #  Help
 # ─────────────────────────────────────────────────────────────
 print_help() {
+  print_disclaimer
   cat <<EOF
 
 ${BOLD}${CYAN}mongopd.sh${RESET} ${VERSION} — MongoDB Problem & Determination
@@ -2072,6 +2085,7 @@ main() {
 
   resolve_connection
   check_deps
+  print_disclaimer
 
   if [[ $DISPATCH_COUNT -eq 0 ]]; then
     print_help
