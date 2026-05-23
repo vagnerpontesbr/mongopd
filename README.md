@@ -34,7 +34,6 @@ I created this repository because I worked with Informix for 25 years. During th
 |---|---|---|
 | `mongosh` | All diagnostic flags | [mongodb.com/try/download/shell](https://www.mongodb.com/try/download/shell) |
 | `mongostat` | `-stat` flag | [mongodb.com/try/download/database-tools](https://www.mongodb.com/try/download/database-tools) |
-| `mongotop` | `-tcbstats` flag | same as above |
 
 ---
 
@@ -139,7 +138,7 @@ mongopd.sh -db <database> [connection] [diagnostic-flag] [modifiers]
 | `-profiling [on\|off]` | Enable/disable profiler (use with `-dynamic`) | — |
 | `-limit <n>` | Limit profiler rows for `-dynamic` | `20` |
 | `-scale [mb\|gb]` | Output scale for `-tables` and `-indexes` | bytes |
-| `-n <seconds>` | Sampling interval for `-stat` and `-tcbstats` | `5` |
+| `-n <seconds>` | Sampling interval for `-stat` | `5` |
 | `-kill <opid>` | Kill operation by opid (prompts for confirmation) | — |
 | `--no-color` | Disable ANSI color output | — |
 
@@ -167,43 +166,61 @@ mpd -db sales -locks wait
 
 #### Output
 
-```json
-{
-  "inprog": [
-    {
-      "opid": 123456,
-      "active": true,
-      "secs_running": 18,
-      "op": "update",
-      "ns": "sales.orders",
-      "waitingForLock": true,
-      "lockStats": {
-        "Global": { "acquireCount": { "w": 1 } },
-        "Database": { "acquireCount": { "w": 1 } },
-        "Collection": {
-          "acquireWaitCount": { "w": 1 },
-          "timeAcquiringMicros": { "w": 17983421 }
-        }
-      },
-      "client": "10.10.2.15:41022",
-      "appName": "inventory-service"
-    }
-  ]
-}
+```
+  ── Blocking Operations ────────────────────────────────────────────
+  ──────────────────────────────────────────────────────────────────────────────────
+  OpID        : 123400  (holding lock)
+  Operation   : update
+  Namespace   : sales.orders
+  Running     : 42s
+  Locks held  : {"Global":"w","Database":"w","Collection":"w"}
+  Client      : 10.10.1.7:44018
+  App         : inventory-service
+  ──────────────────────────────────────────────────────────────────────────────────
+
+  ── Lock Waiters ───────────────────────────────────────────────────
+  ──────────────────────────────────────────────────────────────────────────────────
+  OpID        : 123456  << WAITING
+  Operation   : update
+  Namespace   : sales.orders
+  Waiting     : 18s
+  Locks       : {"Global":"w","Database":"w","Collection":"w"}
+  Client      : 10.10.2.15:41022
+  App         : checkout-service
+  ──────────────────────────────────────────────────────────────────────────────────
+
+  Blockers: 1   Waiters: 1
+```
+
+When called with `wait` argument, only the Lock Waiters section is shown:
+
+```
+  ── Lock Waiters ─────────────────────────────────────────────────────────────────
+  ──────────────────────────────────────────────────────────────────────────────────
+  OpID        : 123456  << WAITING
+  Operation   : update
+  Namespace   : sales.orders
+  Waiting     : 18s
+  Locks       : {"Global":"w","Database":"w","Collection":"w"}
+  Client      : 10.10.2.15:41022
+  App         : checkout-service
+  ──────────────────────────────────────────────────────────────────────────────────
+  Total waiters: 1
 ```
 
 #### Output analysis
 
 | Field | What it means |
 |---|---|
-| `opid` | Operation ID — use this value with `-kill` |
-| `secs_running` | Elapsed time in seconds. Growing value confirms the operation is stuck |
-| `waitingForLock: true` | This operation is blocked waiting for a lock to be released |
-| `ns` | Namespace where contention is occurring (database.collection) |
-| `lockStats.Collection.timeAcquiringMicros` | Time spent waiting for the collection-level lock in microseconds |
-| `client` / `appName` | Source of the blocking session — use this to identify the upstream service |
+| `OpID` | Operation ID — use with `-kill` to terminate the blocker |
+| `Running` / `Waiting` | Elapsed time in seconds; growing value confirms the operation is stuck |
+| `<< WAITING` | This operation is blocked waiting for a lock to be released |
+| `(holding lock)` | This operation holds the lock that is blocking others |
+| `Namespace` | Where contention is occurring (`database.collection`) |
+| `Locks held` / `Locks` | Lock modes held or requested per resource level |
+| `Client` / `App` | Source of the session — use to identify the upstream service |
 
-**Interpretation:** If `waitingForLock: true` and `secs_running` is growing, the operation is in a live lock wait. Identify the holder by looking for the same `ns` with an active write (`op: "update"` or `op: "insert"`) that is NOT waiting for a lock. Terminate the holder if appropriate using `-kill <opid>`.
+**Interpretation:** Match `Namespace` across blocks to identify the contention hot spot. The `(holding lock)` entry is the root cause; the `<< WAITING` entries are the victims. Terminate the holder with `-kill <opid>` if appropriate.
 
 ---
 
@@ -219,41 +236,40 @@ mpd -host mdb1:27017 -db sales -wlocks
 
 #### Output
 
-```json
-{
-  "inprog": [
-    {
-      "opid": 123456,
-      "active": true,
-      "secs_running": 18,
-      "op": "update",
-      "ns": "sales.orders",
-      "waitingForLock": true
-    },
-    {
-      "opid": 123400,
-      "active": true,
-      "secs_running": 42,
-      "op": "update",
-      "ns": "sales.orders",
-      "waitingForLock": false,
-      "lockStats": {
-        "Collection": { "acquireCount": { "w": 1 } }
-      }
-    }
-  ]
-}
+```
+  ──────────────────────────────────────────────────────────────────────────────────
+  OpID        : 123400  [holding]
+  Operation   : update
+  Namespace   : sales.orders
+  Running     : 42s
+  Locks       : {"Global":"w","Database":"w","Collection":"w"}
+  Client      : 10.10.1.7:44018
+  App         : inventory-service
+  ──────────────────────────────────────────────────────────────────────────────────
+  ──────────────────────────────────────────────────────────────────────────────────
+  OpID        : 123456  [WAITING  << BLOCKED]
+  Operation   : update
+  Namespace   : sales.orders
+  Running     : 18s
+  Locks       : {"Global":"w","Database":"w","Collection":"w"}
+  Wait count  : Collection {"w":1}
+  Client      : 10.10.2.15:41022
+  App         : checkout-service
+  ──────────────────────────────────────────────────────────────────────────────────
+  Total: 2 lock-related operation(s)
 ```
 
 #### Output analysis
 
-| Scenario | Indicator |
+| Field | What it means |
 |---|---|
-| Waiter | `waitingForLock: true` |
-| Holder | `waitingForLock: false` with `lockStats` and active write on the same `ns` |
-| Contention point | Multiple operations on the same `ns` with write intent |
+| `[holding]` | This operation currently holds the lock |
+| `[WAITING << BLOCKED]` | This operation is blocked waiting for a lock held by another op |
+| `Locks` | Lock modes requested or held per resource level |
+| `Wait count` | Times the engine had to wait to acquire this lock resource (from `lockStats`) |
+| `Client` / `App` | Source of the session — helps trace back to the offending service |
 
-**Interpretation:** Broader than `-locks wait`. Use this to see both sides: who is waiting and who is holding. Compare `ns` across entries to find the contention hot spot.
+**Interpretation:** Broader than `-locks wait`. Use this to see both sides: who is waiting and who is holding. Match `Namespace` across entries to find the contention hot spot. `Wait count` quantifies how often the lock was contended.
 
 ---
 
@@ -276,40 +292,45 @@ mpd -db sales -applications -secs 10
 
 #### Output
 
-```json
-{
-  "inprog": [
-    {
-      "opid": 223301,
-      "active": true,
-      "secs_running": 42,
-      "op": "query",
-      "ns": "crm.customers",
-      "command": {
-        "find": "customers",
-        "filter": { "status": "ACTIVE" }
-      },
-      "planSummary": "COLLSCAN",
-      "numYields": 125,
-      "client": "10.10.5.9:50114",
-      "appName": "reporting-api"
-    }
-  ]
-}
+```
+  ──────────────────────────────────────────────────────────────────────────────────
+  OpID        : 223301
+  Operation   : query
+  Namespace   : crm.customers
+  Running     : 42s
+  Waiting     : NO
+  Client      : 10.10.5.9:50114
+  App         : reporting-api
+  User        : appuser@admin
+  ──────────────────────────────────────────────────────────────────────────────────
+  ──────────────────────────────────────────────────────────────────────────────────
+  OpID        : 223302
+  Operation   : update
+  Namespace   : sales.orders
+  Running     : 7s
+  Waiting     : YES  << BLOCKED
+  In txn      : YES  txnNum=14
+  Client      : 10.10.1.4:55120
+  App         : checkout-service
+  User        : appuser@admin
+  ──────────────────────────────────────────────────────────────────────────────────
+  Total active: 2
 ```
 
 #### Output analysis
 
 | Field | What it means |
 |---|---|
-| `op` | Operation class: `query`, `update`, `insert`, `delete`, `command` |
-| `ns` | Target namespace |
-| `planSummary` | Access path summary. `IXSCAN` = index used. `COLLSCAN` = full scan |
-| `numYields` | How many times the operation yielded execution to other operations |
-| `secs_running` | Total elapsed time |
-| `client` / `appName` | Source of the request — critical for identifying the offending service |
+| `OpID` | Operation ID — use with `-kill` if the operation needs to be terminated |
+| `Operation` | Operation class: `query`, `update`, `insert`, `delete`, `command` |
+| `Namespace` | Target namespace (`database.collection`) |
+| `Running` | Total elapsed time in seconds |
+| `Waiting: YES << BLOCKED` | Operation is waiting for a lock |
+| `In txn: YES txnNum=N` | Operation is part of a multi-document transaction |
+| `User` | Authenticated user in `user@authdb` format |
+| `Client` / `App` | Source of the request — critical for identifying the offending service |
 
-**Interpretation:** `planSummary: "COLLSCAN"` on a long-running query is the first red flag. It indicates either a missing index or a predicate that cannot use the available indexes. Use `-dynamic` with `-profiling on` to capture more detail.
+**Interpretation:** `Waiting: YES << BLOCKED` combined with a growing `Running` time is a live lock wait. `In txn` alongside `Waiting` indicates a transaction is holding resources while blocked elsewhere — a common deadlock pattern. Use `-locks` to find who holds the blocking lock.
 
 ---
 
@@ -440,43 +461,60 @@ mpd -host mdb1:27017 -db sales -dynamic -profiling off
 
 ---
 
-### `-tcbstats` — Per-collection read/write pressure
+### `-tcbstats` — Per-collection storage, latency, and index usage
 
 **db2pd equivalent:** `db2pd -tcbstats`
 
 #### Syntax
 
 ```bash
-# Default 5-second interval
-mpd -host mdb1:27017 -tcbstats
+# All collections in the database
+mpd -host mdb1:27017 -db sales -tcbstats
 
-# 3-second interval
-mpd -host mdb1:27017 -tcbstats -n 3
+# Single collection
+mpd -host mdb1:27017 -db sales -tcbstats orders
 
 # With MONGODB_URI
-mpd -tcbstats -n 5
+mpd -db sales -tcbstats
 ```
 
 #### Output
 
 ```
-ns                         total    read     write    2026-05-22T14:22:10-03:00
-sales.orders               145ms    25ms     120ms
-sales.customers             18ms    16ms       2ms
-inventory.products          82ms    80ms       2ms
-admin.system.version         1ms     1ms       0ms
+  ──────────────────────────────────────────────────────────────────
+  Collection    : sales.orders
+  Documents     : 1250044
+  Avg doc size  : 1476 bytes
+  Storage       : 2048.00 MB  (data: 1760.98 MB  ratio: 1.16x)
+  Indexes       : 4  (total: 2048.00 MB)
+
+  ── Latency (cumulative since restart) ──────────────────────────────
+  Reads         :     4821033 ops   avg     1.20 ms
+  Writes        :     1129211 ops   avg     3.40 ms
+  Commands      :       12033 ops   avg     0.20 ms
+
+  ── Index Usage ─────────────────────────────────────────────────────
+  _id_                            4121033 accesses
+  status_region_idx               3822011 accesses
+  old_region_idx                        0 accesses  << UNUSED
+
+  [WARN] 1 unused index(es). Review with db.orders.aggregate([{$indexStats:{}}])
+  ──────────────────────────────────────────────────────────────────
 ```
 
 #### Output analysis
 
-| Column | What it means |
+| Field | What it means |
 |---|---|
-| `ns` | Namespace (database.collection) |
-| `total` | Total server time spent on this namespace in the interval |
-| `read` | Time consumed by read operations |
-| `write` | Time consumed by write operations |
+| `Documents` | Current document count from `$collStats` |
+| `Avg doc size` | Average document size in bytes (always reported in bytes regardless of `-scale`) |
+| `Storage` | Compressed on-disk storage size with raw data size and compression ratio |
+| `Indexes` | Index count and total index storage |
+| `Latency — Reads/Writes/Commands` | Cumulative operation count and average latency since last `mongod` restart |
+| `Index Usage` | Access count per index since last restart from `$indexStats` |
+| `<< UNUSED` | Zero access count — candidate for removal |
 
-**Interpretation:** This is a time-spent metric, not a row-count metric. `sales.orders` with 120ms write and 25ms read indicates a write-heavy workload. Common causes: high insert/update rate, many indexes causing write amplification, or a large document with many indexed fields. `inventory.products` with 80ms read may indicate repeated full scans or a cache-miss-heavy read path.
+**Interpretation:** Latency averages are cumulative since restart, not real-time. A high write average (> 10 ms) suggests write amplification or I/O pressure. The `<< UNUSED` marker identifies indexes with no recorded accesses — cross-reference with `-indexes` size to quantify the overhead before dropping.
 
 ---
 
@@ -566,30 +604,78 @@ mpd -host mdb1:27017 -db sales -indexes
 mpd -host mdb1:27017 -db sales -indexes orders -scale mb
 ```
 
-#### Output
+#### Output (all collections — `mpd -db sales -indexes -scale mb`)
 
 ```
-Index count        : 4
-Total index size   : 2048 MB
+  ──────────────────────────────────────────────────────────────────────────────────
+  Collection                      Indexes         Total (MB)     Avg/index (MB)
+  ──────────────────────────────────────────────────────────────────────────────────
+  orders                                4       2048.0000           512.0000
+  customers                             3        768.0000           256.0000
+  products                              2          8.0000             4.0000
+  ──────────────────────────────────────────────────────────────────────────────────
+  TOTAL (3 collections)                 9       2824.0000                  —
+  ──────────────────────────────────────────────────────────────────────────────────
 
-{
-  "_id_": 524288000,
-  "customerId_1_createdAt_-1": 838860800,
-  "status_1": 419430400,
-  "region_1_status_1": 268435456
-}
+  ── Active Index Builds ────────────────────────────────────────────────────────────
+  (none)
+```
+
+#### Output (single collection — `mpd -db sales -indexes orders -scale mb`)
+
+```
+  ── Indexes: sales.orders ────────────────────────────────────────────────
+  Total indexes    : 4
+  Total index size : 2048.0000 MB
+
+  ──────────────────────────────────────────────────────────────────────────────────
+  Name     : _id_
+  Keys     : {"_id":1}
+  Size     : 524.2880 MB
+  Unique   : NO
+  Sparse   : NO
+  ──────────────────────────────────────────────────────────────────────────────────
+  ──────────────────────────────────────────────────────────────────────────────────
+  Name     : customerId_1_createdAt_-1
+  Keys     : {"customerId":1,"createdAt":-1}
+  Size     : 838.8608 MB
+  Unique   : NO
+  Sparse   : NO
+  ──────────────────────────────────────────────────────────────────────────────────
+  ──────────────────────────────────────────────────────────────────────────────────
+  Name     : archivedAt_1
+  Keys     : {"archivedAt":1}
+  Size     : 265.4656 MB
+  Unique   : NO
+  Sparse   : NO
+  TTL      : 2592000s
+  ──────────────────────────────────────────────────────────────────────────────────
+
+  ── Active Index Builds ─────────────────────────────────────────────
+  ──────────────────────────────────────────────────────────────────────────────────
+  OpID       : 991340
+  Collection : sales.orders
+  Index(es)  : status_1_region_1
+  Progress   : 67.3%  (8408750 / 12500443)  (~81s remaining)
+  Running    : 168s
+  ──────────────────────────────────────────────────────────────────────────────────
 ```
 
 #### Output analysis
 
-| Entry | What it means |
-|---|---|
-| `_id_` | Default `_id` index — always present |
-| `customerId_1_createdAt_-1` | Compound index on customerId ascending, createdAt descending |
-| `status_1` | Single-field index on status |
-| `region_1_status_1` | Compound index on region + status |
+| Field | What it means |
+|---|---| 
+| `Collection` / `Indexes` / `Total` | Summary columns in all-collections view |
+| `Avg/index` | Average index size per collection — a rising average may signal index bloat |
+| `Name` | Index name as created |
+| `Keys` | Indexed field(s) and sort directions |
+| `Size` | Disk size of the index in the selected scale unit |
+| `Unique` / `Sparse` | Index property flags |
+| `TTL` | Expiry interval in seconds (present only for TTL indexes) |
+| `Partial` | Partial filter expression (present only for partial indexes) |
+| `Active Index Builds` | Any `createIndexes` currently running; includes progress % and ETA |
 
-**Interpretation:** Compare each index size against its query usage (visible in `system.profile`). An index that is large but never appears in `planSummary` output is a candidate for removal. Unused indexes consume memory and slow down every write operation due to index maintenance overhead.
+**Interpretation:** Use the all-collections view to identify which collections dominate index storage. In the single-collection view, `Size` per index combined with `-tcbstats` access counts can reveal indexes that are large but rarely used. `TTL` present on an index confirms automatic expiration is active.
 
 ---
 
@@ -661,51 +747,71 @@ mpd -host mdb1:27017 -db sales -transactions -secs 5
 
 #### Output — active operations
 
-```json
-{
-  "inprog": [
-    {
-      "opid": 556210,
-      "active": true,
-      "secs_running": 12,
-      "op": "update",
-      "ns": "sales.orders",
-      "transaction": {
-        "parameters": {
-          "txnNumber": 42
-        }
-      },
-      "client": "10.10.1.4:55120",
-      "appName": "checkout-service"
-    }
-  ]
-}
+```
+  ── Active Operations ────────────────────────────────────────────────────────────────
+  ──────────────────────────────────────────────────────────────────────────────────
+  OpID        : 556210
+  Operation   : update
+  Namespace   : sales.orders
+  Running     : 12s
+  In txn      : YES  txnNum=42
+  Client      : 10.10.1.4:55120
+  App         : checkout-service
+  ──────────────────────────────────────────────────────────────────────────────────
 ```
 
-#### Output — aggregate counters
+#### Output — inactive sessions (idle in transaction)
 
-```json
-{
-  "currentActive": 3,
-  "currentInactive": 1,
-  "currentOpen": 4,
-  "totalCommitted": 1882001,
-  "totalAborted": 1243,
-  "totalStarted": 1883244
-}
+```
+  ── Inactive Sessions (open transaction, not executing) ──────────────────────────────
+  ──────────────────────────────────────────────────────────────────────────────────
+  OpID        : 556185
+  Operation   : none
+  Namespace   : —
+  Idle        : 28s
+  In txn      : YES  txnNum=41
+  Client      : 10.10.1.4:55119
+  App         : checkout-service
+  ──────────────────────────────────────────────────────────────────────────────────
+  1 inactive transaction(s) holding resources
+```
+
+#### Output — transaction counters
+
+```
+  ── Transaction Counters ─────────────────────────────────────────────────────────────
+  currentActive    :       3
+  currentInactive  :       1
+  currentOpen      :       4
+  totalCommitted   : 1882001
+  totalAborted     :    1243
+  totalStarted     : 1883244
+  Abort rate       :   0.07%
+  Write conflicts  :      12
+```
+
+#### Output — recommendations
+
+```
+  ── Recommendations ─────────────────────────────────────────────────────────────────
+  [WARN] 1 inactive transaction(s) holding locks. Investigate idle connections.
 ```
 
 #### Output analysis
 
 | Field | What it means |
 |---|---|
+| `Active Operations` | Transactions currently executing; `In txn` confirms multi-document scope |
+| `Inactive Sessions` | Transactions open but not executing — holding locks without doing work |
+| `Idle` | Seconds the session has been dormant inside the transaction |
 | `currentActive` | Transactions currently executing |
 | `currentInactive` | Transactions open but not currently executing (idle in transaction) |
 | `currentOpen` | Total open transactions (`currentActive` + `currentInactive`) |
 | `totalAborted` | Cumulative aborted transactions since last restart |
-| `totalCommitted` | Cumulative committed transactions |
+| `Abort rate` | `totalAborted / totalStarted` — rising ratio signals conflict or timeout issues |
+| `Write conflicts` | WiredTiger-level conflicts between concurrent transactions (`transaction conflict between concurrent transactions`) |
 
-**Interpretation:** `currentInactive` > 0 may indicate application-side logic holding open transactions between operations. This is a common cause of lock contention. `totalAborted / totalStarted` is the abort rate — a rising ratio suggests write conflicts, timeout issues, or application logic problems. Individual long-running transactions are visible in the `inprog` section filtered by `-secs`.
+**Interpretation:** `currentInactive > 0` combined with inactive session blocks indicates application logic holding open transactions between operations — a common source of lock contention. `Write conflicts` rising means concurrent writes to the same documents are retrying repeatedly; review transaction scope and batch size.
 
 ---
 
@@ -725,41 +831,38 @@ mpd -host mdb1:27017 -db sales -utilities -secs 60
 
 #### Output
 
-```json
-{
-  "inprog": [
-    {
-      "opid": 781122,
-      "active": true,
-      "secs_running": 311,
-      "op": "command",
-      "ns": "sales.$cmd",
-      "command": {
-        "createIndexes": "orders",
-        "indexes": [
-          {
-            "key": { "customerId": 1, "createdAt": -1 },
-            "name": "customerId_1_createdAt_-1"
-          }
-        ]
-      },
-      "msg": "Index Build: scanning collection",
-      "progress": { "done": 4021132, "total": 12500443 }
-    }
-  ]
-}
+```
+  ──────────────────────────────────────────────────────────────────────────────────
+  OpID        : 781122
+  Type        : command
+  Namespace   : sales.$cmd
+  Running     : 311s
+  Progress    : 32.2%  (4021132 / 12500443)  (~655s remaining)
+  Description : Index Build: scanning collection
+  Waiting     : NO
+  Client      : 10.10.1.8:44201
+  App         : mongodb-shell
+  ──────────────────────────────────────────────────────────────────────────────────
+  Total: 1 long-running operation(s)
+```
+
+When no operations exceed the threshold:
+
+```
+  (no operations running longer than 30s)
 ```
 
 #### Output analysis
 
 | Field | What it means |
 |---|---|
-| `command.createIndexes` | Confirms an active index build |
-| `msg` | Textual stage of the internal task |
-| `progress.done` / `progress.total` | Task advancement — estimate completion by rate |
-| `secs_running` | Total elapsed time for the task |
+| `Type` | Operation type and class (e.g., `command`, `query`) |
+| `Description` | Stage or command name — `Index Build: scanning collection`, `compact`, etc. |
+| `Progress` | Completion percentage with done/total counts and ETA if available |
+| `Running` | Total elapsed time for the task |
+| `Waiting: YES << BLOCKED` | Task is queued waiting for a lock |
 
-**Interpretation:** MongoDB index builds run in the background and are visible here. `progress.done / progress.total` gives you the completion percentage. A long-running `createIndexes` operation does not block reads or writes in MongoDB 8.x (builds use a hybrid protocol). If `secs_running` is extreme and there is no progress movement, check disk I/O and storage pressure with `-mempools`.
+**Interpretation:** MongoDB index builds run in the background and are visible here. The `Progress` field gives completion percentage plus an ETA based on current rate. A long-running `createIndexes` operation does not block reads or writes in MongoDB 8.x. If `Running` is extreme and `Progress` is not advancing, check disk I/O and storage pressure with `-mempools`.
 
 ---
 
@@ -775,34 +878,41 @@ mpd -host mdb1:27017 -db sales -reorgs
 
 #### Output
 
-```json
-{
-  "inprog": [
-    {
-      "opid": 881200,
-      "active": true,
-      "secs_running": 95,
-      "op": "command",
-      "ns": "sales.$cmd",
-      "msg": "Index Build: draining writes",
-      "command": {
-        "createIndexes": "orders"
-      }
-    }
-  ]
-}
+```
+  ── Background Index Builds ────────────────────────────────────────
+  ──────────────────────────────────────────────────────────────────────────────────
+  OpID        : 881200
+  Collection  : sales.$cmd
+  Index(es)   : customerId_1_createdAt_-1
+  Running     : 95s
+  Progress    : 12.4%  (1550000 / 12500443)  (~671s remaining)
+  Phase       : Index Build: scanning collection
+  Client      : 10.10.1.8:44201
+  ──────────────────────────────────────────────────────────────────────────────────
+
+  ── Compact Operations ─────────────────────────────────────────────
+  (none)
+
+  ── Data Migrations / Resharding ────────────────────────────────────
+  (none)
 ```
 
 #### Output analysis
 
-| `msg` value | Stage |
+| Section | Content |
+|---|---|
+| `Background Index Builds` | Active `createIndexes` operations; includes index name(s), progress % and ETA |
+| `Compact Operations` | Active `compact` commands defragmenting collection storage |
+| `Data Migrations / Resharding` | Chunk migrations (sharded clusters) and resharding operations |
+
+| `Phase` value | Stage |
 |---|---|
 | `Index Build: scanning collection` | First pass — scanning existing documents |
 | `Index Build: draining writes` | Draining write buffer accumulated during scan |
-| `compact` | Collection compaction |
-| `migration` | Chunk migration (sharded cluster) |
+| `compact` | Collection compaction in progress |
+| `migration` / `resharding` | Chunk migration or resharding operation |
 
-**Interpretation:** MongoDB does not have a direct `REORG TABLE` equivalent. This flag captures the closest equivalent: index builds, compaction, and chunk migration. All are safe to observe while the cluster is under load. Use `-utilities` for a broader view of all long-running internal work.
+**Interpretation:** MongoDB does not have a direct `REORG TABLE` equivalent. This flag captures the closest equivalent: index builds, compaction, and chunk migration. `Progress` includes an ETA calculated from elapsed time and completion ratio. All are safe to observe while the cluster is under load. Use `-utilities` for a broader view of all long-running internal work.
 
 ---
 
@@ -1006,7 +1116,7 @@ mpd -host mdb1:27017 -db sales -locks -applications -mempools -hadr
 | `db2pd -applications` | `-applications` | `db.currentOp({ active: true })` |
 | `db2pd -agents` | `-agents` | `db.currentOp()` |
 | `db2pd -dynamic` | `-dynamic` | `db.currentOp()` + `system.profile` |
-| `db2pd -tcbstats` | `-tcbstats` | `mongotop` |
+| `db2pd -tcbstats` | `-tcbstats [collection]` | `db.collection.aggregate([{$collStats:{latencyStats:{},storageStats:{},count:{}}}])` |
 | `db2pd -tables` | `-tables [collection]` | `db.collection.stats()` |
 | `db2pd -indexes` | `-indexes [collection]` | `db.collection.stats()` (index section) |
 | `db2pd -mempools` | `-mempools` | `db.serverStatus().wiredTiger.cache` |
@@ -1027,7 +1137,7 @@ mpd -host mdb1:27017 -db sales -locks -applications -mempools -hadr
 | Which sessions are active right now? | `mpd -db sales -applications` |
 | Which sessions have been running > 30s? | `mpd -db sales -applications -secs 30` |
 | Kill a stuck operation | `mpd -db sales -kill <opid>` |
-| Which collection is the hottest? | `mpd -tcbstats -n 5` |
+| Which collection is the hottest? | `mpd -db sales -tcbstats` |
 | Is there queue pressure on the engine? | `mpd -stat -n 3` |
 | Are slow queries running? | `mpd -db sales -dynamic -profiling on -slowms 200` |
 | Is the cache under pressure? | `mpd -db sales -mempools` |
