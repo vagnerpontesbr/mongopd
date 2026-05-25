@@ -55,10 +55,50 @@ mongopd/
 ├── linux/
 │   └── mongopd.sh        # Adapted for Linux (bash, ~/.bashrc / ~/.profile)
 └── README.md
+
+source/mac/               # Native C binary (libmongoc) — no bash dependency
+├── CMakeLists.txt
+└── src/
+    ├── main.c
+    ├── args.{h,c}
+    ├── connection.{h,c}
+    ├── output.{h,c}
+    ├── bsonutil.{h,c}
+    └── cmd_*.{h,c}       # One file pair per diagnostic command
 ```
 
 Both versions are functionally identical. The only difference is the shell configuration file references
 in comments and help text (`~/.zshrc` on macOS, `~/.bashrc` on Linux).
+
+---
+
+## Build (C native binary)
+
+A standalone binary that replaces the bash dependency entirely. Requires
+[libmongoc](https://www.mongodb.com/docs/drivers/c/) (mongo-c-driver).
+
+### macOS (homebrew)
+
+```bash
+# Install dependencies (one-time)
+brew install mongo-c-driver cmake
+
+# Configure and build
+cmake -B build -S source/mac -DCMAKE_PREFIX_PATH=/opt/homebrew
+cmake --build build
+
+# Verify
+./build/mongopd -help
+```
+
+The binary is self-contained. Copy it to any directory in your `PATH`:
+
+```bash
+cp build/mongopd ~/bin/mongopd
+```
+
+> **Note:** The C binary and the shell scripts are interchangeable — they accept
+> the same flags, connection options and modifiers.
 
 ---
 

@@ -1,0 +1,26 @@
+# Build artifacts
+source/mac/build/
+build/
+bin/
+obj/
+
+# C/C++
+*.o
+*.obj
+*.d
+*.out
+*.exe
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Executable
+mongopd
+source/mac/mongopd
